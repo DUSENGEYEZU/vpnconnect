@@ -1,2 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.DS_Store
+
 # Subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
+
+# Real VPN definitions (hostnames, groups, pins). Copy vpns.example.yaml instead.
+vpns.yaml
+
+# Per-tunnel pid, log and iface files written at runtime
+state/
