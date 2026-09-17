@@ -58,7 +58,9 @@ tags: []
 ### Task 1: Project scaffold and VPN registry
 
 **Files:**
-- Create: `pyproject.toml`, `.python-version`, `.gitignore`, `.flaskenv`, `app/__init__.py` (empty for now), `app/services/__init__.py`, `tests/__init__.py`
+- Create: `pyproject.toml`, `.python-version`, `.flaskenv`,
+- Modify: `.gitignore` (replace its contents with the block below; it currently holds only the `.superpowers/` line)
+- Create: `app/__init__.py` (empty for now), `app/services/__init__.py`, `tests/__init__.py`
 - Create: `app/services/registry.py`
 - Test: `tests/test_registry.py`
 
@@ -119,6 +121,9 @@ __pycache__/
 dist/
 build/
 .DS_Store
+
+# Subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
 
 # Real VPN definitions (hostnames, groups, pins). Copy vpns.example.yaml instead.
 vpns.yaml
