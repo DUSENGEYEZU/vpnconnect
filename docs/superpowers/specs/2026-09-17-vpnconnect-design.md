@@ -55,7 +55,8 @@ A local Flask app (same stack as `social_media_project`) that:
 Copied from `social_media_project/social_media`:
 
 - Python >= 3.13, managed with `uv` (`pyproject.toml`, `uv.lock`, `.python-version`).
-- Flask 3 app factory, blueprint mounted at `/api/v1`, flasgger for `/apidocs`.
+- Flask 3 app factory, blueprint mounted at `/api/v1`, flasgger Swagger UI at `/docs/`
+  and the raw spec at `/openapi.json` (same layout as social_media).
 - `python-dotenv` for `.env`, `PyYAML` for `vpns.yaml`.
 - Dev: `pytest`, `ruff`. `[tool.pytest.ini_options] testpaths = ["tests"]`.
 - Runtime dependency on the host: `openconnect` (Homebrew, v9.21 present) and
@@ -68,11 +69,14 @@ vpnconnect/
   pyproject.toml
   .python-version
   .env.example                 documents VPN_<ID>_USERNAME / VPN_<ID>_PASSWORD
-  .gitignore                   .env, .venv/, state/, caches
-  vpns.yaml                    VPN definitions (no secrets); app writes servercert back here
+  .flaskenv                    FLASK_APP, FLASK_RUN_HOST=127.0.0.1, FLASK_RUN_PORT=5000
+  .gitignore                   .env, vpns.yaml, .venv/, state/, caches
+  vpns.example.yaml            committed template; copied to vpns.yaml
+  vpns.yaml                    real VPN definitions, git-ignored (hostnames stay off GitHub);
+                               the app writes servercert back here
   README.md
   app/
-    __init__.py                create_app(config_class) -> Flask
+    __init__.py                create_app(config_class, manager=None) -> Flask
     config.py                  Config: paths, timeouts, host/port
     docs.py                    flasgger init (as in social_media)
     api/
@@ -81,14 +85,15 @@ vpnconnect/
       vpns.py                  VPN endpoints (section 9)
     services/
       registry.py              load vpns.yaml, merge credentials from env, save servercert
-      runner.py                thin subprocess boundary: HelperRunner (real) and its interface
+      runner.py                thin subprocess boundary: HelperRunner protocol, SudoHelperRunner
       tunnel.py                TunnelManager: state machine, connect/disconnect threads
       status.py                read pid/iface files, parse failures from log, count routes per interface
     templates/
       index.html               dashboard (vanilla JS, polls /api/v1/vpns every 3 s)
   scripts/
-    vpnconnect-helper          bash, installed root-owned; connect / disconnect / probe
-    vpnc-split.sh              bash, installed root-owned; forces split routes, execs vpnc-script
+    vpnconnect-helper          bash 3.2, installed root-owned; probe / connect / disconnect
+    vpnc-split.sh              bash 3.2, installed root-owned; forces split routes, runs vpnc-script,
+                               records <id>.iface
     setup-privileges.sh        run once with sudo; installs the two files and the sudoers line
   state/                       <id>.pid, <id>.log, <id>.iface (git-ignored)
   docs/superpowers/specs/      this file
@@ -126,11 +131,10 @@ VPN_MININFRA_USERNAME=longin
 VPN_MININFRA_PASSWORD=…
 ```
 
-Optional app settings with defaults:
+Optional app settings with defaults (host and port live in `.flaskenv` as
+`FLASK_RUN_HOST=127.0.0.1` / `FLASK_RUN_PORT=5000`):
 
 ```
-VPNCONNECT_HOST=127.0.0.1
-VPNCONNECT_PORT=5000
 VPNCONNECT_VPNS_FILE=./vpns.yaml
 VPNCONNECT_STATE_DIR=./state
 VPNCONNECT_HELPER=/usr/local/libexec/vpnconnect/vpnconnect-helper
@@ -189,10 +193,10 @@ vpnconnect-helper connect <id> <server> <authgroup> <protocol> <username> \
     "Configured as <ip>, with SSL connected …" on success; that line does not
     name the interface, which is why the wrapper records it (section 8.3).
 
-vpnconnect-helper disconnect <id>
+vpnconnect-helper disconnect <id> [grace_seconds]
     Reads <state>/<id>.pid. Verifies `ps -o comm= -p <pid>` ends with
     "openconnect"; otherwise removes the stale pid file and exits 0.
-    kill -TERM, waits up to the grace period, kill -KILL if still alive,
+    kill -TERM, waits up to grace_seconds (default 5), kill -KILL if still alive,
     removes the pid file and <state>/<id>.iface. Exit 0.
 ```
 
@@ -212,15 +216,18 @@ variables (`reason`, `TUNDEV`, `CISCO_SPLIT_INC*`, …). The wrapper:
    configured for this VPN; refusing to take the default route` to stderr and
    exit 1. `openconnect` treats a failed connect script as fatal, so the
    connection aborts and the message lands in the log.
-4. Record the interface: on `reason=connect` or `reconnect`, write
-   `"$TUNDEV $INTERNAL_IP4_ADDRESS"` to `$VPNCONNECT_STATE_DIR/$VPNCONNECT_ID.iface`;
-   on `reason=disconnect`, remove that file. The app treats the presence of this
+4. Run `/opt/homebrew/etc/vpnc/vpnc-script "$@"` and keep its exit code.
+5. Record the interface: on `reason=connect` or `reconnect`, and only if
+   vpnc-script succeeded, write `"$TUNDEV $INTERNAL_IP4_ADDRESS"` to
+   `$VPNCONNECT_STATE_DIR/$VPNCONNECT_ID.iface`; on `reason=disconnect`, remove
+   that file. Exit with vpnc-script's code. The app treats the presence of this
    file plus a live pid as "connected". `TUNDEV` and `INTERNAL_IP4_ADDRESS` are
    supplied by openconnect to every script invocation.
-5. `exec /opt/homebrew/etc/vpnc/vpnc-script "$@"`.
 
-Steps 1 to 3 run for every `reason` (connect, reconnect, disconnect), so the
-same routes are removed on disconnect that were added on connect. The stock
+Steps 1 to 3 run for `reason=connect` and `reconnect`; on `disconnect` the
+routes are re-injected (never refused) so vpnc-script removes exactly what it
+added; `pre-init` and `attempt-reconnect` pass straight through, since no route
+information exists yet at that point. The stock
 vpnc-script only sets a default route when `CISCO_SPLIT_INC` is unset, which is
 what makes step 2 sufficient. DNS: vpnc-script registers the tunnel's DNS
 servers under `State:/Network/Service/<TUNDEV>/DNS`, one entry per tunnel, so
@@ -315,7 +322,7 @@ has_credentials, state, interface, ip, routes_count, message, since`.
 | POST | `/api/v1/vpns/<id>/connect` | 202 `{"id","state":"connecting"}` | 404; 400 `missing credentials: VPN_X_PASSWORD`; 409 already connecting/connected |
 | POST | `/api/v1/vpns/<id>/disconnect` | 202 `{"id","state":"disconnecting"}` | 404; 409 not connected |
 | POST | `/api/v1/vpns/connect-all` | 202 `{"started":[ids],"skipped":[{"id","reason"}]}` | |
-| POST | `/api/v1/vpns/disconnect-all` | 202 `{"started":[ids]}` | |
+| POST | `/api/v1/vpns/disconnect-all` | 202 `{"started":[ids],"skipped":[{"id","reason"}]}` | |
 | GET | `/api/v1/vpns/<id>/log?lines=50` | 200 `{"id","lines":[…]}` | 404 |
 | GET | `/` | 200 HTML dashboard | |
 
