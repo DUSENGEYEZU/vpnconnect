@@ -140,14 +140,24 @@ class TunnelManager:
                 alive = pid is not None and self._pid_alive(pid)
                 if alive:
                     iface = st.read_iface(self.state_dir, vpn.id)
-                    if current.state != CONNECTED and iface is not None:
-                        self._set(
-                            vpn.id,
-                            CONNECTED,
-                            interface=iface[0],
-                            ip=iface[1],
-                            message="adopted running tunnel",
-                        )
+                    if current.state != CONNECTED:
+                        if iface is not None:
+                            self._set(
+                                vpn.id,
+                                CONNECTED,
+                                interface=iface[0],
+                                ip=iface[1],
+                                message="adopted running tunnel",
+                            )
+                        else:
+                            self._set(
+                                vpn.id,
+                                ERROR,
+                                message=(
+                                    f"openconnect is running (pid {pid}) but no tunnel is "
+                                    "configured; disconnect to clean up"
+                                ),
+                            )
                     continue
                 if pid is not None:
                     self._clear_files(vpn.id)
@@ -166,6 +176,12 @@ class TunnelManager:
             current = self._states[vpn_id].state
             if current in (CONNECTING, CONNECTED, DISCONNECTING):
                 raise InvalidTransition(f"{vpn_id} is already {current}")
+            pid = st.read_pid(self.state_dir, vpn_id)
+            if pid is not None and self._pid_alive(pid):
+                raise InvalidTransition(
+                    f"{vpn_id} still has a running openconnect process (pid {pid}); "
+                    "disconnect it first"
+                )
             self._set(vpn_id, CONNECTING)
         self._spawn(self._connect_worker, vpn)
 
@@ -312,8 +328,8 @@ class TunnelManager:
                 detail = st.parse_failure(output) or "no output"
                 raise TunnelError(f"could not probe server certificate: {detail}")
             pin = TRUSTED_CA
-        save_servercert(self.registry.path, vpn.id, pin)
         updated = dataclasses.replace(vpn, servercert=pin)
         with self._lock:
+            save_servercert(self.registry.path, vpn.id, pin)
             self.registry.vpns = [updated if v.id == vpn.id else v for v in self.registry.vpns]
         return updated

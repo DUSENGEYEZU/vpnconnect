@@ -13,6 +13,24 @@ from app.services.tunnel import (
 )
 from tests.fakes import ENV, VPNS_YAML, FakeClock, FakeRunner, ImmediateThread
 
+CAPTURED_THREADS: list["CapturedThread"] = []
+
+
+class CapturedThread:
+    """Stand-in for threading.Thread that records the worker call instead of
+    running it, so a test can inspect the CONNECTING state while the worker
+    is still pending, then run it on demand."""
+
+    def __init__(self, target, args=(), daemon=True):
+        self._target = target
+        self._args = args
+
+    def start(self):
+        CAPTURED_THREADS.append(self)
+
+    def run(self):
+        self._target(*self._args)
+
 
 @pytest.fixture
 def state_dir(tmp_path):
@@ -278,3 +296,61 @@ def test_log_tail_strips_timestamps(manager, runner, state_dir):
     assert manager.log_tail("mininfra") == ["first", "second"]
     with pytest.raises(UnknownVpn):
         manager.log_tail("ghost")
+
+
+def test_refresh_flags_running_process_without_iface(vpns_file, runner, state_dir, clock):
+    (state_dir / "mininfra.pid").write_text("5555\n")
+    runner.alive.add(5555)
+
+    m = make_manager(vpns_file, runner, state_dir, clock)
+    s = m.snapshot_one("mininfra")
+
+    assert s["state"] == ERROR
+    assert s["message"] == (
+        "openconnect is running (pid 5555) but no tunnel is configured; disconnect to clean up"
+    )
+    assert (state_dir / "mininfra.pid").exists()
+
+    with pytest.raises(InvalidTransition, match="disconnect it first"):
+        m.connect("mininfra")
+
+    m.disconnect("mininfra")
+
+    assert m.snapshot_one("mininfra")["state"] == DISCONNECTED
+    assert not (state_dir / "mininfra.pid").exists()
+    assert ("disconnect", "mininfra") in runner.calls
+
+
+def test_connecting_state_is_visible_and_owned_by_worker(vpns_file, runner, state_dir, clock):
+    CAPTURED_THREADS.clear()
+    manager = TunnelManager(
+        load_registry(vpns_file, ENV),
+        runner,
+        state_dir,
+        connect_timeout=30,
+        poll_interval=0.5,
+        pid_alive=lambda pid: pid in runner.alive,
+        route_counter=lambda iface: 3,
+        thread_factory=CapturedThread,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    manager.connect("mininfra")
+
+    assert manager.snapshot_one("mininfra")["state"] == tunnel.CONNECTING
+
+    manager.refresh()
+    assert manager.state_of("mininfra").state == tunnel.CONNECTING
+
+    with pytest.raises(InvalidTransition, match=r"is busy \(connecting\)"):
+        manager.disconnect("mininfra")
+
+    with pytest.raises(InvalidTransition, match="already connecting"):
+        manager.connect("mininfra")
+
+    CAPTURED_THREADS[-1].run()
+
+    s = manager.snapshot_one("mininfra")
+    assert s["state"] == CONNECTED
+    assert s["interface"] == "utun9"
