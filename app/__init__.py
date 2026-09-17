@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, render_template
 
 from app.config import Config
 from app.docs import init_docs
@@ -35,5 +35,9 @@ def create_app(config_class: type[Config] = Config, manager: TunnelManager | Non
 
     app.register_blueprint(api_bp, url_prefix="/api/v1")
     init_docs(app)
+
+    @app.get("/")
+    def index():
+        return render_template("index.html")
 
     return app
