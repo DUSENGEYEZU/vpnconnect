@@ -56,3 +56,24 @@ def test_openapi_spec_defines_vpn_status_schema(spec):
     assert {"VpnStatus", "ActionAccepted", "BulkResult", "LogTail", "Error"} <= set(
         spec["components"]["schemas"]
     )
+
+
+def test_openapi_spec_documents_every_vpn_endpoint(spec):
+    paths = spec["paths"]
+
+    assert "200" in paths["/api/v1/vpns"]["get"]["responses"]
+    assert set(paths["/api/v1/vpns/{vpn_id}"]["get"]["responses"]) == {"200", "404"}
+    assert set(paths["/api/v1/vpns/{vpn_id}/connect"]["post"]["responses"]) == {
+        "202",
+        "400",
+        "404",
+        "409",
+    }
+    assert set(paths["/api/v1/vpns/{vpn_id}/disconnect"]["post"]["responses"]) == {
+        "202",
+        "404",
+        "409",
+    }
+    assert "202" in paths["/api/v1/vpns/connect-all"]["post"]["responses"]
+    assert "202" in paths["/api/v1/vpns/disconnect-all"]["post"]["responses"]
+    assert set(paths["/api/v1/vpns/{vpn_id}/log"]["get"]["responses"]) == {"200", "404"}
