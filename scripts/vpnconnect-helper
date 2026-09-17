@@ -1,0 +1,126 @@
+#!/bin/bash
+# vpnconnect privileged helper.
+#
+# Installed root-owned by scripts/setup-privileges.sh and allowed through one
+# sudoers.d line, so the Flask app (running as the normal user) can start and
+# stop openconnect without a password prompt. Every file path is derived from
+# STATE_DIR plus a validated id: the caller never chooses a path.
+#
+#   vpnconnect-helper probe <server> <authgroup> <protocol>
+#   vpnconnect-helper connect <id> <server> <authgroup> <protocol> <username> <servercert|trusted-ca> <routes|->
+#   vpnconnect-helper disconnect <id> [grace_seconds]
+#
+# connect reads the password from stdin and hands it to openconnect's stdin only.
+# Exit codes: 64 usage, 65 invalid id or grace, otherwise openconnect's.
+#
+# Must run on macOS /bin/bash 3.2: no arrays, no mapfile.
+set -euo pipefail
+
+# Replaced by scripts/setup-privileges.sh at install time.
+STATE_DIR="__STATE_DIR__"
+LIBEXEC_DIR="__LIBEXEC_DIR__"
+OPENCONNECT="__OPENCONNECT__"
+VPNC_SPLIT="$LIBEXEC_DIR/vpnc-split.sh"
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: vpnconnect-helper probe <server> <authgroup> <protocol>
+       vpnconnect-helper connect <id> <server> <authgroup> <protocol> <username> <servercert|trusted-ca> <routes|->
+       vpnconnect-helper disconnect <id> [grace_seconds]
+USAGE
+  exit 64
+}
+
+require_id() {
+  if ! [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "vpnconnect-helper: invalid id '$1'" >&2
+    exit 65
+  fi
+}
+
+cmd_probe() {
+  [ $# -eq 3 ] || usage
+  local server="$1" authgroup="$2" protocol="$3" output
+  # No password and --non-inter: openconnect stops right after the TLS handshake.
+  # An untrusted certificate is reported with its pin; a trusted one continues
+  # to a failed login. Either way the output is what the caller parses.
+  output=$(echo "" | "$OPENCONNECT" "https://$server" --protocol="$protocol" \
+    --authgroup="$authgroup" --user=probe --non-inter 2>&1 || true)
+  printf '%s\n' "$output"
+}
+
+run_openconnect() {
+  # $1 server, $2 authgroup, $3 protocol, $4 username, $5 pidfile, $6 logfile, rest: extra flags.
+  local server="$1" authgroup="$2" protocol="$3" username="$4" pidfile="$5" logfile="$6"
+  shift 6
+  "$OPENCONNECT" "https://$server" --protocol="$protocol" --user="$username" \
+    --authgroup="$authgroup" --passwd-on-stdin --non-inter --timestamp \
+    --background --pid-file="$pidfile" --script="$VPNC_SPLIT" "$@" >>"$logfile" 2>&1
+}
+
+cmd_connect() {
+  [ $# -eq 7 ] || usage
+  local id="$1" server="$2" authgroup="$3" protocol="$4" username="$5" servercert="$6" routes="$7"
+  require_id "$id"
+  mkdir -p "$STATE_DIR"
+  local pidfile="$STATE_DIR/$id.pid" logfile="$STATE_DIR/$id.log" ifacefile="$STATE_DIR/$id.iface"
+  : >"$logfile"
+  rm -f "$ifacefile"
+  if [ "$routes" = "-" ]; then
+    routes=""
+  fi
+  # openconnect passes its environment on to --script.
+  export VPNCONNECT_ID="$id" VPNCONNECT_STATE_DIR="$STATE_DIR" VPNCONNECT_ROUTES="$routes"
+  if [ "$servercert" = "trusted-ca" ]; then
+    run_openconnect "$server" "$authgroup" "$protocol" "$username" "$pidfile" "$logfile"
+  else
+    run_openconnect "$server" "$authgroup" "$protocol" "$username" "$pidfile" "$logfile" \
+      --servercert "$servercert"
+  fi
+}
+
+cmd_disconnect() {
+  { [ $# -ge 1 ] && [ $# -le 2 ]; } || usage
+  local id="$1" grace="${2:-5}" pidfile ifacefile pid running waited=0
+  require_id "$id"
+  if ! [[ "$grace" =~ ^[0-9]+$ ]]; then
+    echo "vpnconnect-helper: invalid grace '$grace'" >&2
+    exit 65
+  fi
+  pidfile="$STATE_DIR/$id.pid"
+  ifacefile="$STATE_DIR/$id.iface"
+  if [ ! -f "$pidfile" ]; then
+    rm -f "$ifacefile"
+    return 0
+  fi
+  pid=$(tr -cd '0-9' <"$pidfile")
+  # Only ever signal a process that really is openconnect; a stale pid may have
+  # been reused by something else. ps -o comm shows argv[0] on macOS.
+  running=$(ps -o comm= -o command= -p "${pid:-0}" 2>/dev/null || true)
+  case "$running" in
+    *openconnect*) ;;
+    *)
+      rm -f "$pidfile" "$ifacefile"
+      return 0
+      ;;
+  esac
+  kill -TERM "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$grace" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$pidfile" "$ifacefile"
+}
+
+[ $# -ge 1 ] || usage
+command="$1"
+shift
+case "$command" in
+  probe) cmd_probe "$@" ;;
+  connect) cmd_connect "$@" ;;
+  disconnect) cmd_disconnect "$@" ;;
+  *) usage ;;
+esac
