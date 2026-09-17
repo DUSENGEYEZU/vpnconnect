@@ -1,0 +1,58 @@
+import pytest
+
+
+@pytest.fixture
+def spec(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    return response.get_json()
+
+
+def test_swagger_ui_is_served_at_docs(client):
+    response = client.get("/docs/")
+
+    assert response.status_code == 200
+    assert b"swagger" in response.data.lower()
+    assert b"<title>vpnconnect API</title>" in response.data
+
+
+def test_openapi_spec_describes_the_api(spec):
+    assert spec["openapi"].startswith("3.")
+    assert spec["info"]["title"] == "vpnconnect API"
+    assert spec["info"]["version"]
+
+
+def test_openapi_spec_documents_health_endpoint(spec):
+    assert "200" in spec["paths"]["/api/v1/health"]["get"]["responses"]
+
+
+def test_openapi_spec_defines_vpn_status_schema(spec):
+    props = spec["components"]["schemas"]["VpnStatus"]["properties"]
+
+    assert set(props) == {
+        "id",
+        "name",
+        "server",
+        "authgroup",
+        "protocol",
+        "routes",
+        "servercert",
+        "has_credentials",
+        "missing_credentials",
+        "state",
+        "interface",
+        "ip",
+        "routes_count",
+        "message",
+        "since",
+    }
+    assert props["state"]["enum"] == [
+        "disconnected",
+        "connecting",
+        "connected",
+        "disconnecting",
+        "error",
+    ]
+    assert {"VpnStatus", "ActionAccepted", "BulkResult", "LogTail", "Error"} <= set(
+        spec["components"]["schemas"]
+    )
