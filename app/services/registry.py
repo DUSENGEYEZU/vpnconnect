@@ -35,8 +35,8 @@ class VpnDef:
     protocol: str = "anyconnect"
     routes: tuple[ipaddress.IPv4Network, ...] = ()
     servercert: str | None = None
-    username: str | None = None
-    password: str | None = None
+    username: str | None = field(default=None, repr=False)
+    password: str | None = field(default=None, repr=False)
 
     @property
     def env_prefix(self) -> str:
@@ -133,12 +133,19 @@ def load_registry(path: str | Path, env: Mapping[str, str]) -> Registry:
     path = Path(path)
     if not path.exists():
         raise RegistryError(f"{path} does not exist")
-    data = yaml.safe_load(path.read_text()) or {}
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise RegistryError(f"{path}: invalid YAML: {exc}") from exc
     entries = data.get("vpns") if isinstance(data, dict) else None
     if not isinstance(entries, list):
         raise RegistryError(f"{path}: top-level 'vpns' must be a list")
 
-    vpns = [parse_vpn(entry or {}, index, env) for index, entry in enumerate(entries)]
+    vpns = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise RegistryError(f"vpns[#{index}]: entry must be a mapping")
+        vpns.append(parse_vpn(entry, index, env))
     seen: set[str] = set()
     for vpn in vpns:
         if vpn.id in seen:
@@ -154,7 +161,10 @@ def save_servercert(path: str | Path, vpn_id: str, value: str) -> None:
     lost the first time the app stores a pin. The README says so.
     """
     path = Path(path)
-    data = yaml.safe_load(path.read_text()) or {}
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise RegistryError(f"{path}: invalid YAML: {exc}") from exc
     for entry in data.get("vpns") or []:
         if isinstance(entry, dict) and entry.get("id") == vpn_id:
             entry["servercert"] = value

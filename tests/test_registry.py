@@ -116,6 +116,8 @@ def test_public_never_exposes_credentials(vpns_file):
             "duplicate id",
         ),
         ("vpns: notalist\n", "'vpns' must be a list"),
+        ("vpns:\n  - id: [unclosed\n", "invalid YAML"),
+        ("vpns:\n  - oops\n", "entry must be a mapping"),
     ],
 )
 def test_invalid_files_raise_registry_error_naming_the_problem(tmp_path, yaml_text, fragment):
@@ -143,3 +145,21 @@ def test_save_servercert_updates_only_that_vpn(vpns_file):
 def test_save_servercert_unknown_id_raises(vpns_file):
     with pytest.raises(RegistryError, match="not found"):
         save_servercert(vpns_file, "ghost", TRUSTED_CA)
+
+
+def test_save_servercert_invalid_yaml_raises(tmp_path):
+    path = tmp_path / "vpns.yaml"
+    path.write_text("vpns:\n  - id: [unclosed\n")
+
+    with pytest.raises(RegistryError, match="invalid YAML"):
+        save_servercert(path, "mininfra", TRUSTED_CA)
+
+
+def test_repr_never_shows_credentials(vpns_file):
+    env = {"VPN_MININFRA_USERNAME": "longin", "VPN_MININFRA_PASSWORD": "s3cret-value"}
+    vpn = load_registry(vpns_file, env=env).get("mininfra")
+
+    vpn_repr = repr(vpn)
+    assert "s3cret-value" not in vpn_repr
+    assert "longin" not in vpn_repr
+    assert "mininfra" in vpn_repr
