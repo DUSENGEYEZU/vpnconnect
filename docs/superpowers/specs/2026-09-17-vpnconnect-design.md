@@ -1,9 +1,3 @@
----
-noteId: "85a82b40b29811f1bfa00599ff0730c1"
-tags: []
-
----
-
 # vpnconnect: run several Cisco AnyConnect VPNs at once from one dashboard
 
 Date: 2026-09-17

@@ -1,9 +1,3 @@
----
-noteId: "84be8730b29b11f1bfa00599ff0730c1"
-tags: []
-
----
-
 # vpnconnect Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
