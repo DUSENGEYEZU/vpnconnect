@@ -161,6 +161,67 @@ def test_disconnect_replaces_a_default_route_include_the_same_way(split, tmp_pat
     assert env["CISCO_SPLIT_INC_0_ADDR"] == "10.10.0.0"
 
 
+def test_pushed_dns_servers_get_host_routes_through_the_tunnel(split, tmp_path):
+    proc, env = run_split(
+        split,
+        tmp_path,
+        connect_env(
+            tmp_path,
+            CISCO_SPLIT_INC="2",
+            CISCO_SPLIT_INC_0_ADDR="10.1.0.0",
+            CISCO_SPLIT_INC_0_MASKLEN="16",
+            CISCO_SPLIT_INC_1_ADDR="10.10.34.10",
+            CISCO_SPLIT_INC_1_MASKLEN="32",
+            INTERNAL_IP4_DNS="10.10.34.10 10.10.34.11",
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert env["CISCO_SPLIT_INC"] == "3"  # 10.10.34.10 was already an include
+    assert env["CISCO_SPLIT_INC_2_ADDR"] == "10.10.34.11"
+    assert env["CISCO_SPLIT_INC_2_MASK"] == "255.255.255.255"
+    assert env["CISCO_SPLIT_INC_2_MASKLEN"] == "32"
+    assert env["CISCO_SPLIT_INC_2_PROTOCOL"] == "0"
+
+
+def test_pushed_dns_servers_are_added_after_injected_routes(split, tmp_path):
+    proc, env = run_split(
+        split,
+        tmp_path,
+        connect_env(
+            tmp_path,
+            VPNCONNECT_ROUTES="10.10.0.0:255.255.0.0:16",
+            INTERNAL_IP4_DNS="10.10.34.10",
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert env["CISCO_SPLIT_INC"] == "2"
+    assert env["CISCO_SPLIT_INC_0_ADDR"] == "10.10.0.0"
+    assert env["CISCO_SPLIT_INC_1_ADDR"] == "10.10.34.10"
+    assert env["CISCO_SPLIT_INC_1_MASKLEN"] == "32"
+
+
+def test_disconnect_adds_the_same_dns_host_routes_and_skips_junk(split, tmp_path):
+    proc, env = run_split(
+        split,
+        tmp_path,
+        connect_env(
+            tmp_path,
+            reason="disconnect",
+            CISCO_SPLIT_INC="1",
+            CISCO_SPLIT_INC_0_ADDR="10.1.0.0",
+            CISCO_SPLIT_INC_0_MASKLEN="16",
+            INTERNAL_IP4_DNS="10.10.34.10 not-an-ip",
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert env["CISCO_SPLIT_INC"] == "2"
+    assert env["CISCO_SPLIT_INC_1_ADDR"] == "10.10.34.10"
+    assert "CISCO_SPLIT_INC_2_ADDR" not in env
+
+
 def test_full_tunnel_with_configured_routes_is_forced_to_split(split, tmp_path):
     routes = "10.10.0.0:255.255.0.0:16,10.20.5.0:255.255.255.0:24"
 

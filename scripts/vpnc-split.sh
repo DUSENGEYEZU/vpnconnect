@@ -10,7 +10,11 @@
 #    CISCO_SPLIT_INC, or a split list that takes the default route), inject this
 #    VPN's configured routes so vpnc-script adds only those and never a default
 #    route. No routes configured: refuse.
-# 2. Record "<TUNDEV> <IP>" in <state>/<id>.iface after a successful connect
+# 2. Route the DNS servers the gateway pushes through the tunnel as /32
+#    includes, as Cisco's client does. The stock vpnc-script only registers
+#    them, so in split mode lookups for the VPN's domain would leave through
+#    the normal interface and time out.
+# 3. Record "<TUNDEV> <IP>" in <state>/<id>.iface after a successful connect
 #    so the dashboard can show them; remove the file on disconnect.
 #
 # Must run on macOS /bin/bash 3.2: no arrays, no mapfile.
@@ -79,6 +83,39 @@ inject_routes() {
   export CISCO_SPLIT_INC=$i
 }
 
+# Append a host include for every pushed DNS server that is not already an
+# include. Same result on connect and disconnect, so vpnc-script removes them.
+add_dns_includes() {
+  local dns i n addr found
+  [ -n "${INTERNAL_IP4_DNS:-}" ] || return 0
+  n="$CISCO_SPLIT_INC"
+  for dns in $INTERNAL_IP4_DNS; do
+    case "$dns" in
+      *[!0-9.]*|"") continue ;;
+    esac
+    found=0
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      eval "addr=\${CISCO_SPLIT_INC_${i}_ADDR:-}"
+      if [ "$addr" = "$dns" ]; then
+        found=1
+        break
+      fi
+      i=$((i + 1))
+    done
+    if [ "$found" -eq 0 ]; then
+      export "CISCO_SPLIT_INC_${n}_ADDR=$dns"
+      export "CISCO_SPLIT_INC_${n}_MASK=255.255.255.255"
+      export "CISCO_SPLIT_INC_${n}_MASKLEN=32"
+      export "CISCO_SPLIT_INC_${n}_PROTOCOL=0"
+      export "CISCO_SPLIT_INC_${n}_SPORT=0"
+      export "CISCO_SPLIT_INC_${n}_DPORT=0"
+      n=$((n + 1))
+    fi
+  done
+  export CISCO_SPLIT_INC=$n
+}
+
 case "${reason:-}" in
   connect|reconnect)
     if ! usable_server_split; then
@@ -94,6 +131,14 @@ case "${reason:-}" in
     # Same environment as on connect so vpnc-script removes exactly what it added.
     if ! usable_server_split && [ -n "${VPNCONNECT_ROUTES:-}" ]; then
       inject_routes
+    fi
+    ;;
+esac
+
+case "${reason:-}" in
+  connect|reconnect|disconnect)
+    if server_sent_split; then
+      add_dns_includes
     fi
     ;;
 esac
