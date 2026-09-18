@@ -1,3 +1,9 @@
+---
+noteId: "8b9664b0b35411f1975947b2236733b6"
+tags: []
+
+---
+
 # vpnconnect: run several Cisco AnyConnect VPNs at once from one dashboard
 
 Date: 2026-09-17
@@ -63,7 +69,7 @@ vpnconnect/
   pyproject.toml
   .python-version
   .env.example                 documents VPN_<ID>_USERNAME / VPN_<ID>_PASSWORD
-  .flaskenv                    FLASK_APP, FLASK_RUN_HOST=127.0.0.1, FLASK_RUN_PORT=5000
+  .flaskenv                    FLASK_APP, FLASK_RUN_HOST=127.0.0.1, FLASK_RUN_PORT=5110
   .gitignore                   .env, vpns.yaml, .venv/, state/, caches
   vpns.example.yaml            committed template; copied to vpns.yaml
   vpns.yaml                    real VPN definitions, git-ignored (hostnames stay off GitHub);
@@ -126,7 +132,7 @@ VPN_MININFRA_PASSWORD=…
 ```
 
 Optional app settings with defaults (host and port live in `.flaskenv` as
-`FLASK_RUN_HOST=127.0.0.1` / `FLASK_RUN_PORT=5000`):
+`FLASK_RUN_HOST=127.0.0.1` / `FLASK_RUN_PORT=5110`):
 
 ```
 VPNCONNECT_VPNS_FILE=./vpns.yaml

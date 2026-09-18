@@ -1,3 +1,9 @@
+---
+noteId: "8b968bc0b35411f1975947b2236733b6"
+tags: []
+
+---
+
 # vpnconnect
 
 Run several Cisco AnyConnect VPNs at the same time from one local dashboard.
@@ -11,7 +17,7 @@ internal network you need, with normal internet traffic staying on Wi-Fi.
 
 - `vpns.yaml` lists your VPNs (server, group, routes). `.env` holds the
   passwords. Both files are git-ignored, and the dashboard can edit both.
-- The dashboard at `http://127.0.0.1:5000` and the REST API under `/api/v1`
+- The dashboard at `http://127.0.0.1:5110` and the REST API under `/api/v1`
   start and stop tunnels.
 - Tunnels are started by a root-owned helper (`/usr/local/libexec/vpnconnect/
   vpnconnect-helper`) that a single `sudoers.d` line lets your user run without
@@ -70,10 +76,10 @@ To undo: `sudo rm -r /usr/local/libexec/vpnconnect /etc/sudoers.d/vpnconnect`.
 uv run flask run
 ```
 
-Open <http://127.0.0.1:5000>. Swagger UI is at <http://127.0.0.1:5000/docs/>.
+Open <http://127.0.0.1:5110>. Swagger UI is at <http://127.0.0.1:5110/docs/>.
 While developing, `uv run flask run --debug` enables the reloader.
 
-On macOS, port 5000 may be taken by AirPlay Receiver. Change
+The default port is 5110 because macOS AirPlay Receiver often occupies 5000. Change
 `FLASK_RUN_PORT` in `.flaskenv` or run `uv run flask run --port 5050`.
 
 ## Configuration
@@ -159,8 +165,8 @@ All responses are JSON. Errors look like `{"error": "..."}`.
 States: `disconnected`, `connecting`, `connected`, `disconnecting`, `error`.
 
 ```bash
-curl -X POST http://127.0.0.1:5000/api/v1/vpns/connect-all
-curl http://127.0.0.1:5000/api/v1/vpns | python3 -m json.tool
+curl -X POST http://127.0.0.1:5110/api/v1/vpns/connect-all
+curl http://127.0.0.1:5110/api/v1/vpns | python3 -m json.tool
 ```
 
 ## Troubleshooting

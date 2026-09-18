@@ -330,7 +330,7 @@ def test_reads_are_never_blocked(client):
         )
 
 
-@pytest.mark.parametrize("base", ["http://localhost", "http://127.0.0.1:5000"])
+@pytest.mark.parametrize("base", ["http://localhost", "http://127.0.0.1:5110"])
 def test_the_dashboards_own_origin_is_allowed(client, base):
     response = client.post("/api/v1/vpns/mininfra/connect", base_url=base, headers={"Origin": base})
 
