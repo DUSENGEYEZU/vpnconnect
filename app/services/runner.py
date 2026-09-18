@@ -7,6 +7,8 @@ and never touch sudo or openconnect.
 from __future__ import annotations
 
 import subprocess
+import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -31,23 +33,56 @@ class HelperRunner(Protocol):
     def disconnect(self, vpn_id: str) -> RunResult: ...
 
 
+def _abandon(proc: subprocess.Popen) -> None:
+    """Let go of a process this user cannot signal, without leaking it.
+
+    The helper and its openconnect run as root: `Popen.kill()` from the app's
+    user fails with EPERM and `wait()` would block until openconnect gives up.
+    Close the pipes and reap the process in a background thread instead.
+    """
+    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+    threading.Thread(target=proc.wait, daemon=True).start()
+
+
 class SudoHelperRunner:
-    def __init__(self, helper_path: str, connect_timeout: int = 30, disconnect_grace: int = 5):
+    def __init__(
+        self,
+        helper_path: str,
+        connect_timeout: int = 30,
+        disconnect_grace: int = 5,
+        command_prefix: Sequence[str] = ("sudo", "-n"),
+    ):
         self.helper_path = helper_path
         self.connect_timeout = connect_timeout
         self.disconnect_grace = disconnect_grace
+        # Tests run a fake helper directly by passing ().
+        self.command_prefix = tuple(command_prefix)
 
     def _run(self, args: list[str], stdin: str | None, timeout: int) -> RunResult:
-        cmd = ["sudo", "-n", self.helper_path, *args]
+        cmd = [*self.command_prefix, self.helper_path, *args]
         try:
-            proc = subprocess.run(
-                cmd, input=stdin, capture_output=True, text=True, timeout=timeout, check=False
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
         except FileNotFoundError as exc:
             raise HelperUnavailable(str(exc)) from exc
+        try:
+            out, err = proc.communicate(input=stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
-            return RunResult(124, f"helper timed out after {timeout}s")
-        output = (proc.stdout or "") + (proc.stderr or "")
+            # Never signal the child; the caller's timeout path disconnects
+            # once a pid file exists and reconciliation adopts a late success.
+            _abandon(proc)
+            return RunResult(124, f"helper did not return within {timeout} s")
+        output = (out or "") + (err or "")
         if proc.returncode != 0 and output.lstrip().startswith("sudo:"):
             raise HelperUnavailable(output.strip())
         return RunResult(proc.returncode, output)

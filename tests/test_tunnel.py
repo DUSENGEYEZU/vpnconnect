@@ -2,6 +2,7 @@ import pytest
 
 from app.services import tunnel
 from app.services.registry import load_registry
+from app.services.runner import HelperUnavailable
 from app.services.tunnel import (
     CONNECTED,
     DISCONNECTED,
@@ -174,6 +175,26 @@ def test_timeout_disconnects_and_reports(manager, runner):
     assert s["state"] == ERROR
     assert s["message"].startswith("timed out after 30 s: Configured as 10.9.9.9")
     assert ("disconnect", "mininfra") in runner.calls
+
+
+def test_timeout_keeps_the_pid_file_when_the_helper_is_gone(manager, runner, state_dir):
+    """Nothing can stop the process, so the pid file has to stay: refresh()
+    still reports it instead of forgetting a running tunnel.
+    """
+    runner.connect_mode = "no-iface"
+
+    def refuse(vpn_id):
+        runner.calls.append(("disconnect", vpn_id))
+        raise HelperUnavailable("sudo: a password is required")
+
+    runner.disconnect = refuse
+
+    manager.connect("mininfra")
+
+    s = manager.state_of("mininfra")
+    assert s.state == ERROR
+    assert s.message == f"timed out after 30 s; {tunnel.HELPER_HINT}"
+    assert (state_dir / "mininfra.pid").exists()
 
 
 def test_helper_unavailable_gives_setup_hint(manager, runner):

@@ -295,10 +295,17 @@ class TunnelManager:
             if self._clock() >= deadline:
                 break
             self._sleep(self.poll_interval)
-        self.runner.disconnect(vpn_id)
-        self._clear_files(vpn_id)
+        timed_out = f"timed out after {int(self.connect_timeout)} s"
         detail = self._failure_message(vpn_id) or "no output from openconnect"
-        self._set(vpn_id, ERROR, message=f"timed out after {int(self.connect_timeout)} s: {detail}")
+        try:
+            self.runner.disconnect(vpn_id)
+        except HelperUnavailable:
+            # Nothing can stop the process now, so keep the pid file: refresh()
+            # still reports it instead of forgetting a running tunnel.
+            self._set(vpn_id, ERROR, message=f"{timed_out}; {HELPER_HINT}")
+            return
+        self._clear_files(vpn_id)
+        self._set(vpn_id, ERROR, message=f"{timed_out}: {detail}")
 
     def _disconnect_worker(self, vpn_id: str) -> None:
         try:
