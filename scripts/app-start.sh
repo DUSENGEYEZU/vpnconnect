@@ -3,6 +3,8 @@
 # terminal). Same as `uv run flask run`, detached, logging to ~/Library/Logs.
 set -eu
 cd "$(dirname "$0")/.."
+# Launched from a login item the PATH is minimal; make sure uv is found.
+export PATH="$PATH:/opt/homebrew/bin:$HOME/.local/bin"
 PORT=$(sed -n 's/^FLASK_RUN_PORT=//p' .flaskenv 2>/dev/null)
 PORT=${PORT:-5110}
 LOG="$HOME/Library/Logs/vpnconnect.log"

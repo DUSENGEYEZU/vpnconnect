@@ -803,6 +803,7 @@ def test_setup_script_replaces_every_placeholder_and_parses():
         "vpnc-split.sh",
         "app-start.sh",
         "app-stop.sh",
+        "autostart.sh",
     ):
         assert subprocess.run(["bash", "-n", str(SCRIPTS / script)]).returncode == 0
         assert os.access(SCRIPTS / script, os.X_OK)

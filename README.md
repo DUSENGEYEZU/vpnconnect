@@ -102,10 +102,20 @@ scripts/app-stop.sh    # stops it
 `app-start.sh` prints the URL once the app answers; running it twice is safe.
 Stopping the dashboard does not close the tunnels: openconnect runs as root on
 its own, and the dashboard adopts the running tunnels when it starts again.
-Press **Disconnect all** first if you want the tunnels down too. The app does
-not start automatically at login: macOS blocks background services from
-`~/Documents`, where this project lives, so run `scripts/app-start.sh` after
-a reboot.
+Press **Disconnect all** first if you want the tunnels down too.
+
+### Start at login
+
+```bash
+scripts/autostart.sh install   # start the dashboard at every login
+scripts/autostart.sh remove    # undo
+```
+
+This creates a tiny launcher app, `~/Applications/vpnconnect-autostart.app`,
+and registers it as a login item; it runs `scripts/app-start.sh`. The first
+time it runs, macOS may ask to allow it access to your Documents folder: click
+Allow. A `launchd` agent is not used because macOS blocks background services
+from `~/Documents`, where this project lives.
 
 ## Configuration
 
