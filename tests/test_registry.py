@@ -115,6 +115,10 @@ def test_public_never_exposes_credentials(vpns_file):
             "  - id: dup\n    server: s\n    authgroup: g\n",
             "duplicate id",
         ),
+        (
+            "vpns:\n  - id: ok\n    server: s\n    authgroup: g\n    routes: [0.0.0.0/0]\n",
+            "default route",
+        ),
         ("vpns: notalist\n", "'vpns' must be a list"),
         ("vpns:\n  - id: [unclosed\n", "invalid YAML"),
         ("vpns:\n  - oops\n", "entry must be a mapping"),

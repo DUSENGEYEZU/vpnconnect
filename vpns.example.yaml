@@ -1,0 +1,21 @@
+# Copy to vpns.yaml (git-ignored) and edit. No secrets here: usernames and
+# passwords live in .env as VPN_<ID>_USERNAME / VPN_<ID>_PASSWORD, where <ID>
+# is the id upper-cased with '-' replaced by '_'.
+#
+# The app writes `servercert` back into this file after the first connect, so
+# hand-written comments in vpns.yaml disappear at that point. Keep notes here.
+vpns:
+  - id: mininfra                 # ^[a-z0-9][a-z0-9_-]*$  ->  VPN_MININFRA_USERNAME / _PASSWORD
+    name: MININFRA office
+    server: vpn.example.gov.rw   # host or host:port; https:// is added
+    authgroup: Staff             # the "Group" dropdown in Cisco Secure Client
+    routes:                      # networks forced into the tunnel if the server
+      - 10.10.0.0/16             # pushes a full tunnel; leave out if the server
+                                 # already sends split routes. No default routes:
+                                 # 0.0.0.0/0 is rejected (it would defeat split routing).
+  - id: rica-hq                  # ->  VPN_RICA_HQ_USERNAME / _PASSWORD
+    name: RICA headquarters
+    server: vpn.example.rw
+    authgroup: Employees
+    routes:
+      - 172.16.0.0/12

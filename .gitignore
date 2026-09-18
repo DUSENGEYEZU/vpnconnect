@@ -16,4 +16,5 @@ build/
 vpns.yaml
 
 # Per-tunnel pid, log and iface files written at runtime
-state/
+state/*
+!state/.gitkeep

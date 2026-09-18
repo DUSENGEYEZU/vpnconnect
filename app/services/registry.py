@@ -110,9 +110,15 @@ def parse_vpn(entry: Mapping[str, Any], index: int, env: Mapping[str, str]) -> V
     routes = []
     for raw in entry.get("routes") or []:
         try:
-            routes.append(ipaddress.IPv4Network(str(raw), strict=False))
+            network = ipaddress.IPv4Network(str(raw), strict=False)
         except ValueError as exc:
             raise RegistryError(f"vpns[{vpn_id}]: route {raw!r} is not an IPv4 network") from exc
+        if network.prefixlen == 0:
+            raise RegistryError(
+                f"vpns[{vpn_id}]: route {raw!r} is a default route; "
+                "default routes are rejected because they would defeat split routing"
+            )
+        routes.append(network)
 
     servercert = entry.get("servercert")
     prefix = env_prefix_for(vpn_id)
