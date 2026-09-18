@@ -138,6 +138,20 @@ def test_iface_file_written_on_connect_and_removed_on_disconnect(split, tmp_path
     assert not (tmp_path / "x.iface").exists()
 
 
+def test_iface_file_is_recreated_not_written_through_a_symlink(split, tmp_path):
+    other = tmp_path / "other.txt"
+    other.write_text("keep me\n")
+    iface = tmp_path / "x.iface"
+    iface.symlink_to(other)
+
+    proc, _ = run_split(split, tmp_path, connect_env(tmp_path, CISCO_SPLIT_INC="1"))
+
+    assert proc.returncode == 0, proc.stderr
+    assert other.read_text() == "keep me\n"
+    assert not iface.is_symlink()
+    assert iface.read_text() == "utun9 10.9.9.9\n"
+
+
 def test_disconnect_reinjects_routes_so_vpnc_script_removes_them(split, tmp_path):
     env_in = connect_env(
         tmp_path, reason="disconnect", VPNCONNECT_ROUTES="10.10.0.0:255.255.0.0:16"
@@ -256,8 +270,10 @@ def helper(tmp_path):
                 pass
 
 
-def run_helper(installed, *args, stdin=None):
-    return subprocess.run([str(installed), *args], input=stdin, capture_output=True, text=True)
+def run_helper(installed, *args, stdin=None, env=None):
+    return subprocess.run(
+        [str(installed), *args], input=stdin, capture_output=True, text=True, env=env
+    )
 
 
 def test_helper_probe_prints_openconnect_output(helper):
@@ -386,6 +402,93 @@ def test_helper_rejects_bad_grace_and_usage(helper):
     assert run_helper(installed, "bogus").returncode == 64
     assert run_helper(installed, "connect", "only", "three").returncode == 64
     assert run_helper(installed, "probe", "one").returncode == 64
+
+
+def test_helper_connect_recreates_symlinked_log_and_pid(helper, tmp_path):
+    installed, state = helper
+    state.mkdir()
+    other_log = tmp_path / "other-log.txt"
+    other_pid = tmp_path / "other-pid.txt"
+    other_log.write_text("keep log\n")
+    other_pid.write_text("keep pid\n")
+    (state / "mininfra.log").symlink_to(other_log)
+    (state / "mininfra.pid").symlink_to(other_pid)
+
+    proc = run_helper(installed, *CONNECT_ARGS, stdin="good\n")
+
+    assert proc.returncode == 0, proc.stderr
+    assert other_log.read_text() == "keep log\n"
+    assert other_pid.read_text() == "keep pid\n"
+    for name in ("mininfra.log", "mininfra.pid"):
+        assert not (state / name).is_symlink()
+        assert (state / name).is_file()
+    assert (state / "mininfra.pid").read_text().strip().isdigit()
+    assert "fake-openconnect:" in (state / "mininfra.log").read_text()
+
+
+def test_helper_disconnect_requires_the_exact_process_name(helper):
+    installed, state = helper
+    sleeper = subprocess.Popen(["bash", "-c", "exec -a openconnect-extra sleep 30"])
+    try:
+        state.mkdir(exist_ok=True)
+        (state / "mininfra.pid").write_text(f"{sleeper.pid}\n")
+
+        assert run_helper(installed, "disconnect", "mininfra").returncode == 0
+
+        assert sleeper.poll() is None  # name only contains "openconnect": treated as stale
+        assert not (state / "mininfra.pid").exists()
+    finally:
+        sleeper.kill()
+
+
+def test_helper_uses_a_fixed_path_not_the_callers(helper, tmp_path):
+    installed, state = helper
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    marker = tmp_path / "fake-ps-ran"
+    fake_ps = fakebin / "ps"
+    fake_ps.write_text(f'#!/bin/bash\ntouch "{marker}"\necho openconnect\n')
+    fake_ps.chmod(0o755)
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        state.mkdir(exist_ok=True)
+        (state / "mininfra.pid").write_text(f"{sleeper.pid}\n")
+        env = {**os.environ, "PATH": f"{fakebin}:{os.environ['PATH']}"}
+
+        assert run_helper(installed, "disconnect", "mininfra", env=env).returncode == 0
+
+        assert not marker.exists()
+        assert sleeper.poll() is None
+    finally:
+        sleeper.kill()
+
+
+def test_helper_accepts_well_formed_routes(helper):
+    installed, state = helper
+    args = list(CONNECT_ARGS)
+    args[7] = "10.10.0.0:255.255.0.0:16,192.168.5.0:255.255.255.0:24"
+
+    proc = run_helper(installed, *args, stdin="good\n")
+
+    assert proc.returncode == 0, proc.stderr
+    assert (state / "mininfra.pid").exists()
+
+
+@pytest.mark.parametrize(
+    "bad_routes",
+    ["10.0.0.0:255.0.0.0:8;id", "foo", "10.0.0.0:255.0.0.0", "10.0.0.0:255.0.0.0:8,", ""],
+)
+def test_helper_rejects_malformed_routes_before_touching_state(helper, bad_routes):
+    installed, state = helper
+    args = list(CONNECT_ARGS)
+    args[7] = bad_routes
+
+    proc = run_helper(installed, *args, stdin="good\n")
+
+    assert proc.returncode == 65
+    assert "invalid routes" in proc.stderr
+    assert not (state / "mininfra.pid").exists()
+    assert not (state / "mininfra.log").exists()
 
 
 def test_setup_script_replaces_every_placeholder_and_parses():

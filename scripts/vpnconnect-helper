@@ -11,10 +11,14 @@
 #   vpnconnect-helper disconnect <id> [grace_seconds]
 #
 # connect reads the password from stdin and hands it to openconnect's stdin only.
-# Exit codes: 64 usage, 65 invalid id or grace, otherwise openconnect's.
+# Exit codes: 64 usage, 65 invalid id, grace or routes, 73 state file could not
+# be created, otherwise openconnect's.
 #
 # Must run on macOS /bin/bash 3.2: no arrays, no mapfile.
 set -euo pipefail
+# Resolve every command from the system directories, whatever PATH the caller had.
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
 
 # Replaced by scripts/setup-privileges.sh at install time.
 STATE_DIR="__STATE_DIR__"
@@ -36,6 +40,23 @@ require_id() {
     echo "vpnconnect-helper: invalid id '$1'" >&2
     exit 65
   fi
+}
+
+require_routes() {
+  # "-" means no routes; otherwise every comma-separated field is addr:mask:prefixlen.
+  local routes="$1" rest field pattern='^[0-9.]+:[0-9.]+:[0-9]+$'
+  if [ "$routes" = "-" ]; then
+    return 0
+  fi
+  rest="$routes,"
+  while [ -n "$rest" ]; do
+    field="${rest%%,*}"
+    rest="${rest#*,}"
+    if ! [[ "$field" =~ $pattern ]]; then
+      echo "vpnconnect-helper: invalid routes '$routes'" >&2
+      exit 65
+    fi
+  done
 }
 
 cmd_probe() {
@@ -62,20 +83,33 @@ cmd_connect() {
   [ $# -eq 7 ] || usage
   local id="$1" server="$2" authgroup="$3" protocol="$4" username="$5" servercert="$6" routes="$7"
   require_id "$id"
+  require_routes "$routes"
   mkdir -p "$STATE_DIR"
   local pidfile="$STATE_DIR/$id.pid" logfile="$STATE_DIR/$id.log" ifacefile="$STATE_DIR/$id.iface"
-  : >"$logfile"
-  rm -f "$ifacefile"
+  # The state dir belongs to the user. Create the log and pid files ourselves as
+  # brand-new regular files (noclobber opens with O_EXCL) rather than writing
+  # through whatever is already at those paths.
+  rm -f "$logfile" "$pidfile" "$ifacefile"
+  if ! (set -C; : >"$logfile" && : >"$pidfile") 2>/dev/null; then
+    echo "vpnconnect-helper: could not create state files for '$id'" >&2
+    exit 73
+  fi
   if [ "$routes" = "-" ]; then
     routes=""
   fi
   # openconnect passes its environment on to --script.
   export VPNCONNECT_ID="$id" VPNCONNECT_STATE_DIR="$STATE_DIR" VPNCONNECT_ROUTES="$routes"
+  local rc=0
   if [ "$servercert" = "trusted-ca" ]; then
-    run_openconnect "$server" "$authgroup" "$protocol" "$username" "$pidfile" "$logfile"
+    run_openconnect "$server" "$authgroup" "$protocol" "$username" "$pidfile" "$logfile" || rc=$?
   else
     run_openconnect "$server" "$authgroup" "$protocol" "$username" "$pidfile" "$logfile" \
-      --servercert "$servercert"
+      --servercert "$servercert" || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    # Failed connect: leave only the log behind, as before the pid file was pre-created.
+    rm -f "$pidfile" "$ifacefile"
+    exit "$rc"
   fi
 }
 
@@ -94,16 +128,14 @@ cmd_disconnect() {
     return 0
   fi
   pid=$(tr -cd '0-9' <"$pidfile")
-  # Only ever signal a process that really is openconnect; a stale pid may have
-  # been reused by something else. ps -o comm shows argv[0] on macOS.
-  running=$(ps -o comm= -o command= -p "${pid:-0}" 2>/dev/null || true)
-  case "$running" in
-    *openconnect*) ;;
-    *)
-      rm -f "$pidfile" "$ifacefile"
-      return 0
-      ;;
-  esac
+  # Only ever signal a process whose executable name is exactly openconnect; a
+  # stale pid may have been reused by something else. ps -o comm shows argv[0] on
+  # macOS, a full path when openconnect was started by path, so compare the basename.
+  running=$(ps -o comm= -p "${pid:-0}" 2>/dev/null || true)
+  if [ "${running##*/}" != "openconnect" ]; then
+    rm -f "$pidfile" "$ifacefile"
+    return 0
+  fi
   kill -TERM "$pid" 2>/dev/null || true
   while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$grace" ]; do
     sleep 1

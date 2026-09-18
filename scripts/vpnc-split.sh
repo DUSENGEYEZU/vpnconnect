@@ -67,7 +67,12 @@ if [ -n "${VPNCONNECT_ID:-}" ] && [ -n "${VPNCONNECT_STATE_DIR:-}" ]; then
   case "${reason:-}" in
     connect|reconnect)
       if [ "$rc" -eq 0 ]; then
-        printf '%s %s\n' "${TUNDEV:-}" "${INTERNAL_IP4_ADDRESS:-}" > "$iface_file"
+        # Runs as root in a user-owned dir: replace the file, never write through it.
+        rm -f "$iface_file"
+        if ! (set -C; printf '%s %s\n' "${TUNDEV:-}" "${INTERNAL_IP4_ADDRESS:-}" >"$iface_file") 2>/dev/null; then
+          echo "vpnconnect: could not create $iface_file" >&2
+          exit 1
+        fi
       fi
       ;;
     disconnect)
