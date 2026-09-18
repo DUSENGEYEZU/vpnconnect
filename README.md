@@ -100,6 +100,16 @@ that rewrite. Keep notes in `vpns.example.yaml`.
 `VPNCONNECT_CONNECT_TIMEOUT` (default 30 s), `VPNCONNECT_DISCONNECT_GRACE`
 (default 5 s). Host and port come from `.flaskenv`.
 
+`VPNCONNECT_STATE_DIR` is not a free override: the installed helper derives
+every pid, log and iface path from the `STATE_DIR` baked into it, so the two
+must match. After changing it, re-run the setup script with the same value:
+
+```bash
+sudo STATE_DIR=/absolute/path/to/state scripts/setup-privileges.sh
+```
+
+The app logs a warning at startup when the two differ.
+
 ## API
 
 All responses are JSON. Errors look like `{"error": "..."}`.
@@ -134,10 +144,31 @@ curl http://127.0.0.1:5000/api/v1/vpns | python3 -m json.tool
 | `timed out after 30 s` | Check the row's log; the server may be unreachable or require a second factor (not supported). |
 | `tunnel dropped: ...` | openconnect exited on its own (network change, server timeout). Connect again. |
 | Row shows `adopted running tunnel` | The app restarted while the tunnel stayed up. Everything is fine. |
+| Row stays `connected` but nothing is reachable | The pid in `state/<id>.pid` was reused by another root process, so the app still sees a live pid. Press Disconnect: the helper only signals a process actually named `openconnect` and otherwise just clears the files. Then connect again. |
 | Two VPNs need the same internal network | The first route added wins. Check `netstat -rn -f inet`. |
 
 Cisco Secure Client can stay installed. Its own session is not shown or
 controlled here.
+
+## Security notes
+
+- The `sudoers.d` line grants passwordless root to one root-owned script. That
+  script runs `/opt/homebrew/bin/openconnect` and
+  `/opt/homebrew/etc/vpnc/vpnc-script`, and Homebrew leaves both writable by
+  your own user: anything running as you can edit them and be run as root
+  without a password. On a single-user machine that may be an acceptable
+  trade; to close it, install root-owned copies and bake those paths in:
+
+  ```bash
+  sudo OPENCONNECT=/usr/local/sbin/openconnect \
+       VPNC_SCRIPT=/usr/local/sbin/vpnc-script \
+       scripts/setup-privileges.sh
+  ```
+
+- Passwords are read from `.env` and reach `openconnect` on stdin only. They
+  are never a command-line argument, a log line or part of an API response.
+- The server binds to 127.0.0.1 and has no authentication: anyone able to run
+  code as your user can start and stop your tunnels.
 
 ## Development
 
