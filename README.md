@@ -30,6 +30,9 @@ internal network you need, with normal internet traffic staying on Wi-Fi.
   connect as soon as the refusal reaches the log, instead of hijacking your
   default route. IPv6 is disabled on every tunnel (`--disable-ipv6`), so a
   server cannot take the IPv6 default route either.
+- The wrapper also adds a host route for every DNS server a VPN pushes, as
+  Cisco's client does, so lookups for that VPN's domain reach its resolvers
+  through the tunnel instead of timing out on your normal interface.
 - The first connect to a server probes its certificate pin and stores it in
   `vpns.yaml` as `servercert`. Later connects verify against it.
 
