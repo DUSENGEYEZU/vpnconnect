@@ -10,7 +10,7 @@ internal network you need, with normal internet traffic staying on Wi-Fi.
 ## How it works
 
 - `vpns.yaml` lists your VPNs (server, group, routes). `.env` holds the
-  passwords. Both files are git-ignored.
+  passwords. Both files are git-ignored, and the dashboard can edit both.
 - The dashboard at `http://127.0.0.1:5000` and the REST API under `/api/v1`
   start and stop tunnels.
 - Tunnels are started by a root-owned helper (`/usr/local/libexec/vpnconnect/
@@ -96,9 +96,10 @@ that rewrite. Keep notes in `vpns.example.yaml`.
 ### `.env`
 
 `VPN_<ID>_USERNAME`, `VPN_<ID>_PASSWORD` per VPN, plus optional
-`VPNCONNECT_VPNS_FILE`, `VPNCONNECT_STATE_DIR`, `VPNCONNECT_HELPER`,
-`VPNCONNECT_CONNECT_TIMEOUT` (default 30 s), `VPNCONNECT_DISCONNECT_GRACE`
-(default 5 s). Host and port come from `.flaskenv`.
+`VPNCONNECT_VPNS_FILE`, `VPNCONNECT_ENV_FILE`, `VPNCONNECT_STATE_DIR`,
+`VPNCONNECT_HELPER`, `VPNCONNECT_CONNECT_TIMEOUT` (default 30 s),
+`VPNCONNECT_DISCONNECT_GRACE` (default 5 s). Host and port come from
+`.flaskenv`.
 
 `VPNCONNECT_STATE_DIR` is not a free override: the installed helper derives
 every pid, log and iface path from the `STATE_DIR` baked into it, so the two
@@ -109,6 +110,31 @@ sudo STATE_DIR=/absolute/path/to/state scripts/setup-privileges.sh
 ```
 
 The app logs a warning at startup when the two differ.
+
+### Managing VPNs from the dashboard
+
+**Add VPN** in the header and **Edit** / **Delete** on a row write the same two
+files, so they stay the source of truth and hand editing keeps working.
+
+- Per VPN: `id`, `name`, `server`, `authgroup` and `routes` go to `vpns.yaml`,
+  the username and password to `.env`. Nothing else is editable from the UI.
+- The `id` names the env variables and the state files, so it cannot change:
+  delete the VPN and add it again instead.
+- Passwords are write-only. An empty password field keeps the stored one, and
+  no response, log line or page ever shows one.
+- Changing `server` drops the stored `servercert`, so the next connect probes
+  the new host's certificate.
+- Edit and Delete are refused while the tunnel is connecting, connected or
+  disconnecting. Delete also removes that VPN's two lines from `.env` and its
+  `state/<id>.log`.
+- Changes apply at once: the app re-reads `vpns.yaml` and the credentials
+  after every change, and tunnels that stay up keep running.
+- App settings (`SECRET_KEY`, `VPNCONNECT_*`) are **not** editable from the
+  UI. They are read once at startup, and `VPNCONNECT_STATE_DIR` has to match
+  the installed helper, so edit `.env` by hand and restart `flask run`.
+- The API has no authentication, so every `POST`, `PUT` and `DELETE` is
+  refused unless the request is for `127.0.0.1`/`localhost` and, when a
+  browser sends an `Origin` header, that origin is the dashboard's own.
 
 ## API
 
@@ -124,6 +150,9 @@ All responses are JSON. Errors look like `{"error": "..."}`.
 | POST | `/api/v1/vpns/connect-all` | 202 `{"started": [...], "skipped": [{"id", "reason"}]}` |
 | POST | `/api/v1/vpns/disconnect-all` | 202, same shape |
 | GET | `/api/v1/vpns/{id}/log?lines=50` | last log lines from openconnect |
+| POST | `/api/v1/vpns` | 201 adds a VPN with its credentials; 400 invalid field; 409 duplicate id |
+| PUT | `/api/v1/vpns/{id}` | 200 changes it; 400 invalid; 404 unknown; 409 not disconnected |
+| DELETE | `/api/v1/vpns/{id}` | 204 removes it with its credentials and log; 404; 409 not disconnected |
 
 States: `disconnected`, `connecting`, `connected`, `disconnecting`, `error`.
 
@@ -137,7 +166,7 @@ curl http://127.0.0.1:5000/api/v1/vpns | python3 -m json.tool
 | Symptom | Cause and fix |
 |---|---|
 | `privilege helper not available: run sudo scripts/setup-privileges.sh` | The sudoers line or the helper is missing. Run the setup script. |
-| `missing credentials: VPN_X_PASSWORD` | Add the variable to `.env` and restart `flask run`. |
+| `missing credentials: VPN_X_PASSWORD` | Set the password with **Edit** on that row, or add the variable to `.env` by hand and restart `flask run`. |
 | `Login failed.` | Wrong username, password or authgroup. |
 | `Certificate from VPN server ... failed verification` | The server's certificate changed. If that is expected, delete `servercert` for that VPN in `vpns.yaml` and connect again. |
 | `vpnconnect: server pushed a full tunnel and no routes are configured` | Add a `routes:` list for that VPN. |
@@ -167,6 +196,9 @@ controlled here.
 
 - Passwords are read from `.env` and reach `openconnect` on stdin only. They
   are never a command-line argument, a log line or part of an API response.
+  The dashboard can write them to `.env` (mode 0600) but never reads one back.
+- Mutating requests are refused unless they come from the dashboard's own
+  host and origin, so a page on another site cannot drive your tunnels.
 - The server binds to 127.0.0.1 and has no authentication: anyone able to run
   code as your user can start and stop your tunnels.
 
