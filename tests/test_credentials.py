@@ -5,7 +5,13 @@ import textwrap
 import pytest
 from dotenv import dotenv_values
 
-from app.services.credentials import env_var_names, remove_credentials, set_credentials
+from app.services.credentials import (
+    CredentialError,
+    env_var_names,
+    remove_credentials,
+    scaffold_credentials,
+    set_credentials,
+)
 
 EXISTING = textwrap.dedent("""\
     SECRET_KEY=keep-me
@@ -156,3 +162,38 @@ def test_os_environ_is_the_default_target(monkeypatch, env_file):
     remove_credentials(env_file, "mininfra")
     assert "VPN_MININFRA_USERNAME" not in os.environ
     assert "VPN_MININFRA_PASSWORD" not in os.environ
+
+
+@pytest.mark.parametrize("value", ["${HOME}", "pre${VAR}post"])
+def test_a_value_dotenv_would_interpolate_is_refused(env_file, value):
+    with pytest.raises(CredentialError, match="VPN_MININFRA_PASSWORD must not contain"):
+        set_credentials(env_file, "mininfra", password=value, env={})
+
+    assert env_file.read_text() == EXISTING
+
+
+def test_scaffold_keeps_values_already_in_the_file(env_file):
+    scaffold_credentials(env_file, "mininfra", env={})
+
+    assert env_file.read_text() == EXISTING
+
+
+def test_scaffold_writes_what_is_given_and_appends_only_missing_lines(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("VPN_X_USERNAME=by-hand\n")
+
+    scaffold_credentials(path, "x", password="pw", env={})
+
+    assert path.read_text() == "VPN_X_USERNAME=by-hand\nVPN_X_PASSWORD=pw\n"
+
+
+def test_scaffold_appends_both_lines_empty_for_a_fresh_id(env_file):
+    env = {}
+
+    scaffold_credentials(env_file, "rica-hq", env=env)
+
+    assert env_file.read_text().splitlines()[-2:] == [
+        "VPN_RICA_HQ_USERNAME=",
+        "VPN_RICA_HQ_PASSWORD=",
+    ]
+    assert env == {"VPN_RICA_HQ_USERNAME": "", "VPN_RICA_HQ_PASSWORD": ""}

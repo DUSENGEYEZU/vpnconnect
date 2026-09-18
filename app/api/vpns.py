@@ -9,6 +9,7 @@ from typing import Any
 from flask import current_app, jsonify, request
 
 from app.api import api_bp
+from app.services.credentials import INTERPOLATION
 from app.services.registry import DuplicateVpn, RegistryError
 from app.services.tunnel import (
     InvalidTransition,
@@ -53,6 +54,9 @@ def body_fields(vpn_id: str | None = None) -> dict[str, Any]:
     for key in STRING_FIELDS:
         if key in body and not isinstance(body[key], str):
             raise BadRequest(f"{key!r} must be a string")
+    for key in ("username", "password"):
+        if INTERPOLATION in body.get(key, ""):
+            raise BadRequest(f"{key!r} must not contain {INTERPOLATION!r}: .env expands it")
     routes = body.get("routes")
     if routes is not None and (
         not isinstance(routes, list) or any(not isinstance(route, str) for route in routes)

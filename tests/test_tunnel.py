@@ -1,4 +1,5 @@
 import logging
+import threading
 
 import pytest
 from dotenv import dotenv_values
@@ -634,3 +635,86 @@ def test_delete_vpn_is_refused_while_openconnect_is_running(manager, state_dir, 
 
     assert (state_dir / "mininfra.pid").exists()
     assert manager.registry.ids() == ["mininfra", "rica"]
+
+
+def _connect_in_another_thread(manager, vpn_id, outcome, started):
+    def run():
+        started.set()
+        try:
+            manager.connect(vpn_id)
+            outcome.append("connected")
+        except tunnel.TunnelError as exc:
+            outcome.append(type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 - a crash must fail the test, not vanish
+            outcome.append(f"{type(exc).__name__}: {exc}")
+
+    return threading.Thread(target=run)
+
+
+def test_delete_holds_the_lock_from_the_state_check_to_the_reload(manager, monkeypatch, runner):
+    """A connect racing a delete cannot slip between the state check and the
+    mutation: it waits, then finds the VPN gone."""
+    outcome: list[str] = []
+    started = threading.Event()
+    thread = _connect_in_another_thread(manager, "rica", outcome, started)
+    real_remove_vpn = tunnel.remove_vpn
+
+    def remove_then_race(path, vpn_id):
+        real_remove_vpn(path, vpn_id)
+        thread.start()
+        started.wait(1)
+        thread.join(0.2)
+        assert thread.is_alive()  # blocked on the lock the delete still holds
+        assert outcome == []
+
+    monkeypatch.setattr(tunnel, "remove_vpn", remove_then_race)
+
+    manager.delete_vpn("rica")
+    thread.join(2)
+
+    assert outcome == ["UnknownVpn"]
+    assert runner.calls == []
+
+
+def test_edit_holds_the_lock_and_a_later_connect_sees_the_new_definition(
+    manager, monkeypatch, runner
+):
+    """The same window on edit: the connect waits, then starts from the
+    reloaded definition, not the one the edit replaced."""
+    outcome: list[str] = []
+    started = threading.Event()
+    thread = _connect_in_another_thread(manager, "mininfra", outcome, started)
+    real_update_vpn = tunnel.update_vpn
+
+    def update_then_race(path, vpn_id, fields):
+        vpn = real_update_vpn(path, vpn_id, fields)
+        thread.start()
+        started.wait(1)
+        thread.join(0.2)
+        assert thread.is_alive()
+        assert outcome == []
+        return vpn
+
+    monkeypatch.setattr(tunnel, "update_vpn", update_then_race)
+
+    manager.edit_vpn("mininfra", {"server": "vpn.moved.example"})
+    thread.join(2)
+
+    assert outcome == ["connected"]
+    # The stored pin went with the old server, so a worker using the reloaded
+    # definition has to probe the new host first.
+    assert ("probe", "mininfra") in runner.calls
+    assert manager.registry.get("mininfra").server == "vpn.moved.example"
+
+
+def test_create_vpn_keeps_credentials_already_in_the_env_file(manager):
+    manager.env_file.write_text(
+        manager.env_file.read_text()
+        + "VPN_PREFILLED_USERNAME=by-hand\nVPN_PREFILLED_PASSWORD=set-by-hand\n"
+    )
+
+    manager.create_vpn({"id": "prefilled", "server": "vpn.pre.example", "authgroup": "g"})
+
+    values = dotenv_values(manager.env_file)
+    assert values["VPN_PREFILLED_USERNAME"] == "by-hand"
+    assert values["VPN_PREFILLED_PASSWORD"] == "set-by-hand"

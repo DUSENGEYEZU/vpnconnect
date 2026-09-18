@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services import status as st
-from app.services.credentials import remove_credentials, set_credentials
+from app.services.credentials import remove_credentials, scaffold_credentials, set_credentials
 from app.services.registry import (
     TRUSTED_CA,
     Registry,
@@ -155,7 +155,9 @@ class TunnelManager:
         """Bring in-memory state in line with the pid and iface files on disk."""
         for vpn in self.registry.vpns:
             with self._lock:
-                current = self._states[vpn.id]
+                current = self._states.get(vpn.id)
+                if current is None:
+                    continue  # a reload dropped this id while we were iterating
                 if current.state in (CONNECTING, DISCONNECTING):
                     continue  # a worker owns this id right now
                 pid = st.read_pid(self.state_dir, vpn.id)
@@ -190,11 +192,14 @@ class TunnelManager:
     # ----- actions -------------------------------------------------------
 
     def connect(self, vpn_id: str) -> None:
-        vpn = self._vpn(vpn_id)
-        if vpn.missing_credentials:
-            raise MissingCredentials(vpn.missing_credentials)
+        self._vpn(vpn_id)
         self.refresh()
         with self._lock:
+            # A mutation may have changed or removed this VPN while the call
+            # waited for the lock, so read the definition again here.
+            vpn = self._vpn(vpn_id)
+            if vpn.missing_credentials:
+                raise MissingCredentials(vpn.missing_credentials)
             current = self._states[vpn_id].state
             if current in (CONNECTING, CONNECTED, DISCONNECTING):
                 raise InvalidTransition(f"{vpn_id} is already {current}")
@@ -211,6 +216,7 @@ class TunnelManager:
         self._vpn(vpn_id)
         self.refresh()
         with self._lock:
+            self._vpn(vpn_id)  # it may have been removed while we waited
             current = self._states[vpn_id].state
             if current in (CONNECTING, DISCONNECTING):
                 raise InvalidTransition(f"{vpn_id} is busy ({current}); try again shortly")
@@ -261,22 +267,23 @@ class TunnelManager:
         """Add one VPN to vpns.yaml with its credentials in .env."""
         with self._lock:
             vpn = add_vpn(self.registry.path, fields)
-            # Both lines are written even when empty, so .env lists the
-            # variables the new VPN needs.
-            set_credentials(
+            scaffold_credentials(
                 self.env_file,
                 vpn.id,
-                username=fields.get("username") or "",
-                password=fields.get("password") or "",
+                username=fields.get("username"),
+                password=fields.get("password"),
                 env=self.env,
             )
             self.reload()
-        return self.snapshot_one(vpn.id)
+            return self.snapshot_one(vpn.id)
 
     def edit_vpn(self, vpn_id: str, fields: Mapping[str, Any]) -> dict[str, Any]:
         """Change one VPN. Credentials left out or empty are kept."""
-        self._require_mutable(vpn_id)
+        # The whole body runs under the lock: a connect must not start between
+        # the state check and the write, or its worker would hold the old
+        # definition and store its pin under the new server.
         with self._lock:
+            self._require_mutable(vpn_id)
             update_vpn(self.registry.path, vpn_id, fields)
             set_credentials(
                 self.env_file,
@@ -286,12 +293,14 @@ class TunnelManager:
                 env=self.env,
             )
             self.reload()
-        return self.snapshot_one(vpn_id)
+            return self.snapshot_one(vpn_id)
 
     def delete_vpn(self, vpn_id: str) -> None:
         """Remove one VPN, its credentials and its leftover state files."""
-        self._require_mutable(vpn_id)
+        # Locked from the state check to the reload, like edit_vpn: a connect
+        # must not start on an id this call is about to drop.
         with self._lock:
+            self._require_mutable(vpn_id)
             pid = st.read_pid(self.state_dir, vpn_id)
             if pid is not None and self._pid_alive(pid):
                 # Dropping the entry would orphan a process this user cannot

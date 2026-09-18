@@ -341,3 +341,22 @@ def test_a_body_less_post_without_a_content_type_still_works(client):
     response = client.post("/api/v1/vpns/connect-all")
 
     assert response.status_code == 202
+
+
+@pytest.mark.parametrize("field", ["username", "password"])
+def test_a_credential_dotenv_would_interpolate_is_refused(client, field):
+    response = client.post("/api/v1/vpns", json={**NEW_VPN, field: "pa${LEAKED}ss"})
+
+    assert response.status_code == 400
+    assert field in response.get_json()["error"]
+    assert "must not contain" in response.get_json()["error"]
+    assert "LEAKED" not in response.get_data(as_text=True)
+    assert [v["id"] for v in client.get("/api/v1/vpns").get_json()["vpns"]] == ["mininfra", "rica"]
+
+
+def test_an_interpolating_password_is_refused_on_update_too(client):
+    response = client.put("/api/v1/vpns/mininfra", json={"password": "x${LEAKED}y"})
+
+    assert response.status_code == 400
+    assert "LEAKED" not in response.get_data(as_text=True)
+    assert client.get("/api/v1/vpns/mininfra").get_json()["has_credentials"] is True

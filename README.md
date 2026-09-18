@@ -126,7 +126,9 @@ files, so they stay the source of truth and hand editing keeps working.
   the new host's certificate.
 - Edit and Delete are refused while the tunnel is connecting, connected or
   disconnecting. Delete also removes that VPN's two lines from `.env` and its
-  `state/<id>.log`.
+  `state/<id>.log`. A VPN in `error` whose `openconnect` process is still
+  running cannot be deleted either: press **Disconnect** first, otherwise the
+  entry would go and leave that process behind.
 - Changes apply at once: the app re-reads `vpns.yaml` and the credentials
   after every change, and tunnels that stay up keep running.
 - App settings (`SECRET_KEY`, `VPNCONNECT_*`) are **not** editable from the

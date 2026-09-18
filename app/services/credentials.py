@@ -22,6 +22,13 @@ from app.services.registry import env_prefix_for
 # Leading or trailing whitespace, a '#' or a quote would not survive
 # python-dotenv's unquoted-value rules; a newline would break the line format.
 NEEDS_QUOTING = re.compile(r"^\s|\s$|[#\r\n\"']")
+# python-dotenv expands ${VAR} when it loads the file, whatever the quoting, so
+# a value containing it would come back changed after a restart.
+INTERPOLATION = "${"
+
+
+class CredentialError(ValueError):
+    """A credential cannot be stored in .env without being changed."""
 
 
 def env_var_names(vpn_id: str) -> tuple[str, str]:
@@ -47,9 +54,36 @@ def set_credentials(
     }
     if not values:
         return
+    for name, value in values.items():
+        if INTERPOLATION in value:
+            raise CredentialError(f"{name} must not contain {INTERPOLATION!r}")
     _rewrite(path, values)
     target = os.environ if env is None else env
     target.update(values)
+
+
+def scaffold_credentials(
+    path: str | Path,
+    vpn_id: str,
+    *,
+    username: str | None = None,
+    password: str | None = None,
+    env: MutableMapping[str, str] | None = None,
+) -> None:
+    """Store the credentials of a new VPN.
+
+    Supplied values are written; a line that is missing is added empty so .env
+    lists what the VPN needs, but a value already put there by hand is kept.
+    """
+    username_var, password_var = env_var_names(vpn_id)
+    present = _present(path, (username_var, password_var))
+    set_credentials(
+        path,
+        vpn_id,
+        username=username or (None if username_var in present else ""),
+        password=password or (None if password_var in present else ""),
+        env=env,
+    )
 
 
 def remove_credentials(
@@ -64,6 +98,13 @@ def remove_credentials(
     target = os.environ if env is None else env
     for name in names:
         target.pop(name, None)
+
+
+def _present(path: str | Path, names: tuple[str, ...]) -> set[str]:
+    """The names that already have an assignment line in the file."""
+    path = Path(path)
+    lines = path.read_text().splitlines() if path.exists() else []
+    return {name for name in names if any(_assignment(name).match(line) for line in lines)}
 
 
 def _assignment(name: str) -> re.Pattern[str]:
