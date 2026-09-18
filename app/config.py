@@ -15,6 +15,8 @@ class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me")
     # VPN definitions without secrets. Credentials come from VPN_<ID>_USERNAME / _PASSWORD.
     VPNS_FILE = os.environ.get("VPNCONNECT_VPNS_FILE", str(REPO_ROOT / "vpns.yaml"))
+    # Credentials, edited in place when a VPN is added or changed from the dashboard.
+    ENV_FILE = os.environ.get("VPNCONNECT_ENV_FILE", str(REPO_ROOT / ".env"))
     # Per-tunnel pid, log and iface files. Git-ignored.
     STATE_DIR = os.environ.get("VPNCONNECT_STATE_DIR", str(REPO_ROOT / "state"))
     # Root-owned helper installed once by scripts/setup-privileges.sh.

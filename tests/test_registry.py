@@ -1,12 +1,17 @@
 import textwrap
 
 import pytest
+import yaml
 
 from app.services.registry import (
     TRUSTED_CA,
+    DuplicateVpn,
     RegistryError,
+    add_vpn,
     load_registry,
+    remove_vpn,
     save_servercert,
+    update_vpn,
 )
 
 VALID_YAML = textwrap.dedent("""
@@ -167,3 +172,156 @@ def test_repr_never_shows_credentials(vpns_file):
     assert "s3cret-value" not in vpn_repr
     assert "longin" not in vpn_repr
     assert "mininfra" in vpn_repr
+
+
+def test_add_vpn_appends_a_validated_entry(vpns_file):
+    vpn = add_vpn(
+        vpns_file,
+        {
+            "id": "new-vpn",
+            "name": "New VPN",
+            "server": "vpn.new.example:443",
+            "authgroup": "Staff",
+            "routes": ["10.30.0.0/16"],
+        },
+    )
+
+    assert vpn.id == "new-vpn"
+    registry = load_registry(vpns_file, env={})
+    assert registry.ids() == ["mininfra", "rica-hq", "new-vpn"]
+    added = registry.get("new-vpn")
+    assert added.name == "New VPN"
+    assert added.server == "vpn.new.example:443"
+    assert added.authgroup == "Staff"
+    assert [str(r) for r in added.routes] == ["10.30.0.0/16"]
+    assert added.servercert is None
+
+
+def test_add_vpn_without_a_name_or_routes(vpns_file):
+    add_vpn(vpns_file, {"id": "bare", "server": "s.example", "authgroup": "g"})
+
+    bare = load_registry(vpns_file, env={}).get("bare")
+    assert bare.name == "bare"
+    assert bare.routes == ()
+    assert "routes" not in yaml.safe_load(vpns_file.read_text())["vpns"][-1]
+
+
+def test_add_vpn_rejects_a_duplicate_id(vpns_file):
+    with pytest.raises(DuplicateVpn, match="duplicate id"):
+        add_vpn(vpns_file, {"id": "mininfra", "server": "s.example", "authgroup": "g"})
+
+    assert load_registry(vpns_file, env={}).get("mininfra").server == "vpn.mininfra.example"
+
+
+@pytest.mark.parametrize(
+    ("fields", "fragment"),
+    [
+        ({"id": "Bad Id", "server": "s", "authgroup": "g"}, "id must match"),
+        ({"id": "ok", "authgroup": "g"}, "'server' is required"),
+        ({"id": "ok", "server": "s"}, "'authgroup' is required"),
+        ({"id": "ok", "server": "s", "authgroup": "g", "routes": ["nonsense"]}, "not an IPv4"),
+        ({"id": "ok", "server": "s", "authgroup": "g", "routes": ["0.0.0.0/0"]}, "default route"),
+        ({"server": "s", "authgroup": "g"}, "'id' is required"),
+    ],
+)
+def test_add_vpn_validates_like_load_registry(vpns_file, fields, fragment):
+    before = vpns_file.read_text()
+
+    with pytest.raises(RegistryError, match=fragment):
+        add_vpn(vpns_file, fields)
+
+    assert vpns_file.read_text() == before
+
+
+def test_update_vpn_changes_only_the_given_fields(vpns_file):
+    vpn = update_vpn(vpns_file, "mininfra", {"name": "MININFRA HQ", "routes": ["10.99.0.0/16"]})
+
+    assert vpn.name == "MININFRA HQ"
+    registry = load_registry(vpns_file, env={})
+    updated = registry.get("mininfra")
+    assert updated.name == "MININFRA HQ"
+    assert updated.server == "vpn.mininfra.example"
+    assert updated.authgroup == "Staff"
+    assert [str(r) for r in updated.routes] == ["10.99.0.0/16"]
+    assert registry.get("rica-hq").server == "vpn.rica.example:8443"
+
+
+def test_update_vpn_keeps_keys_it_does_not_manage(vpns_file):
+    vpns_file.write_text(
+        "vpns:\n  - id: mininfra\n    server: s.example\n    authgroup: g\n"
+        "    protocol: nc\n    servercert: pin-sha256:keep=\n"
+    )
+
+    update_vpn(vpns_file, "mininfra", {"name": "Renamed"})
+
+    entry = yaml.safe_load(vpns_file.read_text())["vpns"][0]
+    assert entry["protocol"] == "nc"
+    assert entry["servercert"] == "pin-sha256:keep="
+    assert entry["name"] == "Renamed"
+
+
+def test_update_vpn_clears_servercert_when_the_server_changes(vpns_file):
+    update_vpn(vpns_file, "rica-hq", {"server": "vpn.new.example"})
+
+    rica = load_registry(vpns_file, env={}).get("rica-hq")
+    assert rica.server == "vpn.new.example"
+    assert rica.servercert is None
+    assert "servercert" not in yaml.safe_load(vpns_file.read_text())["vpns"][1]
+
+
+def test_update_vpn_keeps_servercert_when_the_server_is_unchanged(vpns_file):
+    update_vpn(vpns_file, "rica-hq", {"server": "vpn.rica.example:8443", "authgroup": "Staff"})
+
+    rica = load_registry(vpns_file, env={}).get("rica-hq")
+    assert rica.servercert == "pin-sha256:abc123="
+    assert rica.authgroup == "Staff"
+
+
+def test_update_vpn_validates_and_leaves_the_file_alone(vpns_file):
+    before = vpns_file.read_text()
+
+    with pytest.raises(RegistryError, match="not an IPv4"):
+        update_vpn(vpns_file, "mininfra", {"routes": ["10.0.0.0/16", "oops"]})
+    with pytest.raises(RegistryError, match="'server' is required"):
+        update_vpn(vpns_file, "mininfra", {"server": "  "})
+
+    assert vpns_file.read_text() == before
+
+
+def test_update_vpn_unknown_id_raises(vpns_file):
+    with pytest.raises(RegistryError, match="not found"):
+        update_vpn(vpns_file, "ghost", {"name": "x"})
+
+
+def test_remove_vpn_drops_only_that_entry(vpns_file):
+    remove_vpn(vpns_file, "mininfra")
+
+    assert load_registry(vpns_file, env={}).ids() == ["rica-hq"]
+
+
+def test_remove_vpn_unknown_id_raises(vpns_file):
+    with pytest.raises(RegistryError, match="not found"):
+        remove_vpn(vpns_file, "ghost")
+
+
+def test_mutations_leave_no_temporary_files(tmp_path):
+    path = tmp_path / "vpns.yaml"
+    path.write_text("vpns: []\n")
+
+    add_vpn(path, {"id": "one", "server": "s.example", "authgroup": "g"})
+    update_vpn(path, "one", {"name": "One"})
+    save_servercert(path, "one", TRUSTED_CA)
+    remove_vpn(path, "one")
+
+    assert [p.name for p in tmp_path.iterdir()] == ["vpns.yaml"]
+    assert load_registry(path, env={}).ids() == []
+
+
+def test_mutations_reject_a_malformed_file(tmp_path):
+    path = tmp_path / "vpns.yaml"
+    path.write_text("vpns: notalist\n")
+
+    with pytest.raises(RegistryError, match="'vpns' must be a list"):
+        add_vpn(path, {"id": "one", "server": "s.example", "authgroup": "g"})
+    with pytest.raises(RegistryError, match="'vpns' must be a list"):
+        remove_vpn(path, "one")

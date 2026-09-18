@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_paths_default_to_the_repository():
     assert Path(Config.VPNS_FILE) == REPO_ROOT / "vpns.yaml"
     assert Path(Config.STATE_DIR) == REPO_ROOT / "state"
+    assert Path(Config.ENV_FILE) == REPO_ROOT / ".env"
 
 
 def test_helper_and_timeouts_have_defaults():
