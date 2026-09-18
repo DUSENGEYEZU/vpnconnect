@@ -797,6 +797,12 @@ def test_setup_script_replaces_every_placeholder_and_parses():
     assert "__VPNC_SCRIPT__" in setup
     assert "NOPASSWD" in setup
     assert "visudo -cf" in setup
-    for script in ("setup-privileges.sh", "vpnconnect-helper", "vpnc-split.sh"):
+    for script in (
+        "setup-privileges.sh",
+        "vpnconnect-helper",
+        "vpnc-split.sh",
+        "app-start.sh",
+        "app-stop.sh",
+    ):
         assert subprocess.run(["bash", "-n", str(SCRIPTS / script)]).returncode == 0
         assert os.access(SCRIPTS / script, os.X_OK)

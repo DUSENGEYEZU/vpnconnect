@@ -89,6 +89,24 @@ While developing, `uv run flask run --debug` enables the reloader.
 The default port is 5110 because macOS AirPlay Receiver often occupies 5000. Change
 `FLASK_RUN_PORT` in `.flaskenv` or run `uv run flask run --port 5050`.
 
+### In the background
+
+Start the dashboard detached from the terminal (it keeps running when you close
+the window) and stop it again:
+
+```bash
+scripts/app-start.sh   # runs `uv run flask run` in the background, log in ~/Library/Logs/vpnconnect.log
+scripts/app-stop.sh    # stops it
+```
+
+`app-start.sh` prints the URL once the app answers; running it twice is safe.
+Stopping the dashboard does not close the tunnels: openconnect runs as root on
+its own, and the dashboard adopts the running tunnels when it starts again.
+Press **Disconnect all** first if you want the tunnels down too. The app does
+not start automatically at login: macOS blocks background services from
+`~/Documents`, where this project lives, so run `scripts/app-start.sh` after
+a reboot.
+
 ## Configuration
 
 ### `vpns.yaml`
