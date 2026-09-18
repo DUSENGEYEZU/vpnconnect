@@ -202,8 +202,11 @@ Python (for example `10.10.0.0:255.255.0.0:16`), or `-` for none.
 `openconnect` calls the script with the connection described in environment
 variables (`reason`, `TUNDEV`, `CISCO_SPLIT_INC*`, …). The wrapper:
 
-1. If `CISCO_SPLIT_INC` is set and >= 1, the server sent split routes. Leave
-   the environment alone.
+1. If `CISCO_SPLIT_INC` is set and >= 1 and no include is `0.0.0.0` or has
+   mask length 0, the server sent usable split routes. Leave the environment
+   alone. A list that carries a default route is dropped (every
+   `CISCO_SPLIT_INC*` variable unset) and handled as a full tunnel by steps 2
+   and 3, because vpnc-script turns a `0.0.0.0` include into a default route.
 2. Else if `VPNCONNECT_ROUTES` is non-empty, export `CISCO_SPLIT_INC=<n>` and
    `CISCO_SPLIT_INC_<i>_ADDR/_MASK/_MASKLEN` for each triple.
 3. Else print `vpnconnect: server pushed a full tunnel and no routes are
@@ -223,8 +226,9 @@ Steps 1 to 3 run for `reason=connect` and `reconnect`; on `disconnect` the
 routes are re-injected (never refused) so vpnc-script removes exactly what it
 added; `pre-init` and `attempt-reconnect` pass straight through, since no route
 information exists yet at that point. The stock
-vpnc-script only sets a default route when `CISCO_SPLIT_INC` is unset, which is
-what makes step 2 sufficient. DNS: vpnc-script registers the tunnel's DNS
+vpnc-script only sets a default route when `CISCO_SPLIT_INC` is unset or an
+include is `0.0.0.0`, which is what makes steps 1 and 2 sufficient. IPv6 is
+disabled with `--disable-ipv6`, so vpnc-script never sets an IPv6 default route. DNS: vpnc-script registers the tunnel's DNS
 servers under `State:/Network/Service/<TUNDEV>/DNS`, one entry per tunnel, so
 several tunnels coexist.
 
