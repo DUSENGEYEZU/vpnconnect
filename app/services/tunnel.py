@@ -17,14 +17,24 @@ import dataclasses
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from app.services import status as st
-from app.services.registry import TRUSTED_CA, Registry, VpnDef, save_servercert
+from app.services.credentials import remove_credentials, set_credentials
+from app.services.registry import (
+    TRUSTED_CA,
+    Registry,
+    VpnDef,
+    add_vpn,
+    load_registry,
+    remove_vpn,
+    save_servercert,
+    update_vpn,
+)
 from app.services.runner import HELPER_TIMEOUT_RC, HelperRunner, HelperUnavailable
 
 DISCONNECTED = "disconnected"
@@ -32,6 +42,9 @@ CONNECTING = "connecting"
 CONNECTED = "connected"
 DISCONNECTING = "disconnecting"
 ERROR = "error"
+
+# A definition may only be changed or deleted while nothing is running on it.
+MUTABLE_STATES = (DISCONNECTED, ERROR)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +90,8 @@ class TunnelManager:
         runner: HelperRunner,
         state_dir: Path,
         *,
+        env_file: str | Path,
+        env: MutableMapping[str, str],
         connect_timeout: float = 30,
         poll_interval: float = 0.5,
         pid_alive: Callable[[int], bool] = st.pid_alive,
@@ -88,6 +103,10 @@ class TunnelManager:
         self.registry = registry
         self.runner = runner
         self.state_dir = Path(state_dir)
+        # The .env file credentials are written to, and the mapping the
+        # registry reads them back from (os.environ in the running app).
+        self.env_file = Path(env_file)
+        self.env = env
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.connect_timeout = connect_timeout
         self.poll_interval = poll_interval
@@ -222,6 +241,80 @@ class TunnelManager:
             except InvalidTransition as exc:
                 skipped.append({"id": vpn.id, "reason": str(exc)})
         return {"started": started, "skipped": skipped}
+
+    # ----- definitions ---------------------------------------------------
+
+    def reload(self) -> None:
+        """Re-read vpns.yaml and the credentials in the environment.
+
+        Ids that stay keep their current state, new ids start disconnected and
+        removed ids drop out, so a change never disturbs a live tunnel.
+        """
+        with self._lock:
+            registry = load_registry(self.registry.path, self.env)
+            self._states = {
+                vpn.id: self._states.get(vpn.id, TunnelState()) for vpn in registry.vpns
+            }
+            self.registry = registry
+
+    def create_vpn(self, fields: Mapping[str, Any]) -> dict[str, Any]:
+        """Add one VPN to vpns.yaml with its credentials in .env."""
+        with self._lock:
+            vpn = add_vpn(self.registry.path, fields)
+            # Both lines are written even when empty, so .env lists the
+            # variables the new VPN needs.
+            set_credentials(
+                self.env_file,
+                vpn.id,
+                username=fields.get("username") or "",
+                password=fields.get("password") or "",
+                env=self.env,
+            )
+            self.reload()
+        return self.snapshot_one(vpn.id)
+
+    def edit_vpn(self, vpn_id: str, fields: Mapping[str, Any]) -> dict[str, Any]:
+        """Change one VPN. Credentials left out or empty are kept."""
+        self._require_mutable(vpn_id)
+        with self._lock:
+            update_vpn(self.registry.path, vpn_id, fields)
+            set_credentials(
+                self.env_file,
+                vpn_id,
+                username=fields.get("username") or None,
+                password=fields.get("password") or None,
+                env=self.env,
+            )
+            self.reload()
+        return self.snapshot_one(vpn_id)
+
+    def delete_vpn(self, vpn_id: str) -> None:
+        """Remove one VPN, its credentials and its leftover state files."""
+        self._require_mutable(vpn_id)
+        with self._lock:
+            pid = st.read_pid(self.state_dir, vpn_id)
+            if pid is not None and self._pid_alive(pid):
+                # Dropping the entry would orphan a process this user cannot
+                # signal without the helper.
+                raise InvalidTransition(
+                    f"{vpn_id} still has a running openconnect process (pid {pid}); "
+                    "disconnect it first"
+                )
+            remove_vpn(self.registry.path, vpn_id)
+            remove_credentials(self.env_file, vpn_id, env=self.env)
+            self._clear_files(vpn_id)
+            st.log_path(self.state_dir, vpn_id).unlink(missing_ok=True)
+            self.reload()
+
+    def _require_mutable(self, vpn_id: str) -> None:
+        self._vpn(vpn_id)
+        self.refresh()
+        with self._lock:
+            current = self._states[vpn_id].state
+            if current not in MUTABLE_STATES:
+                raise InvalidTransition(
+                    f"{vpn_id} is {current}; it must be disconnected before it can be changed"
+                )
 
     # ----- reads ---------------------------------------------------------
 

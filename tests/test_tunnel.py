@@ -1,10 +1,12 @@
 import logging
 
 import pytest
+from dotenv import dotenv_values
 
 from app.services import status as st
 from app.services import tunnel
-from app.services.registry import load_registry
+from app.services.credentials import env_var_names
+from app.services.registry import DuplicateVpn, add_vpn, load_registry, remove_vpn
 from app.services.runner import HelperUnavailable, RunResult
 from app.services.tunnel import (
     CONNECTED,
@@ -15,7 +17,7 @@ from app.services.tunnel import (
     TunnelManager,
     UnknownVpn,
 )
-from tests.fakes import ENV, VPNS_YAML, FakeClock, FakeRunner, ImmediateThread
+from tests.fakes import ENV, ENV_TEXT, VPNS_YAML, FakeClock, FakeRunner, ImmediateThread
 
 CAPTURED_THREADS: list["CapturedThread"] = []
 
@@ -61,10 +63,15 @@ def clock():
 
 
 def make_manager(vpns_file, runner, state_dir, clock, env=ENV):
+    # The .env the manager may edit lives beside the temporary vpns.yaml.
+    env_file = vpns_file.with_name(".env")
+    env_file.write_text(ENV_TEXT)
     return TunnelManager(
         load_registry(vpns_file, env),
         runner,
         state_dir,
+        env_file=env_file,
+        env=dict(env),
         connect_timeout=30,
         poll_interval=0.5,
         pid_alive=lambda pid: pid in runner.alive,
@@ -465,6 +472,8 @@ def test_connecting_state_is_visible_and_owned_by_worker(vpns_file, runner, stat
         load_registry(vpns_file, ENV),
         runner,
         state_dir,
+        env_file=vpns_file.with_name(".env"),
+        env=dict(ENV),
         connect_timeout=30,
         poll_interval=0.5,
         pid_alive=lambda pid: pid in runner.alive,
@@ -492,3 +501,136 @@ def test_connecting_state_is_visible_and_owned_by_worker(vpns_file, runner, stat
     s = manager.snapshot_one("mininfra")
     assert s["state"] == CONNECTED
     assert s["interface"] == "utun9"
+
+
+def test_reload_keeps_existing_states_adds_new_ids_and_drops_removed(manager, vpns_file):
+    manager.connect("mininfra")
+    assert manager.state_of("mininfra").state == CONNECTED
+
+    add_vpn(vpns_file, {"id": "extra", "server": "vpn.extra.example", "authgroup": "g"})
+    remove_vpn(vpns_file, "rica")
+    manager.reload()
+
+    assert [s["id"] for s in manager.snapshot()] == ["mininfra", "extra"]
+    assert manager.state_of("mininfra").state == CONNECTED
+    assert manager.state_of("extra").state == DISCONNECTED
+    with pytest.raises(UnknownVpn):
+        manager.snapshot_one("rica")
+
+
+def test_reload_picks_up_credentials_added_to_the_environment(manager, vpns_file):
+    manager.env.pop("VPN_RICA_PASSWORD")
+    manager.reload()
+    assert manager.snapshot_one("rica")["has_credentials"] is False
+
+    manager.env["VPN_RICA_PASSWORD"] = "pw2"
+    manager.reload()
+
+    assert manager.snapshot_one("rica")["has_credentials"] is True
+
+
+def test_create_vpn_writes_both_files_and_can_connect(manager, vpns_file):
+    row = manager.create_vpn(
+        {
+            "id": "new-vpn",
+            "name": "New VPN",
+            "server": "vpn.new.example",
+            "authgroup": "Staff",
+            "routes": ["10.30.0.0/16"],
+            "username": "longin",
+            "password": "fresh-pw",
+        }
+    )
+
+    assert row["id"] == "new-vpn"
+    assert row["state"] == DISCONNECTED
+    assert row["has_credentials"] is True
+    assert row["routes"] == ["10.30.0.0/16"]
+    assert "password" not in row and "username" not in row
+    assert load_registry(vpns_file, env={}).get("new-vpn").server == "vpn.new.example"
+    assert dotenv_values(manager.env_file)["VPN_NEW_VPN_PASSWORD"] == "fresh-pw"
+    assert "fresh-pw" not in vpns_file.read_text()
+
+    manager.connect("new-vpn")
+
+    assert manager.state_of("new-vpn").state == CONNECTED
+
+
+def test_create_vpn_writes_empty_lines_when_no_credentials_are_given(manager):
+    row = manager.create_vpn({"id": "bare", "server": "vpn.bare.example", "authgroup": "g"})
+
+    assert row["has_credentials"] is False
+    assert row["missing_credentials"] == list(env_var_names("bare"))
+    assert dotenv_values(manager.env_file)["VPN_BARE_PASSWORD"] == ""
+
+
+def test_create_vpn_refuses_a_duplicate_id(manager, vpns_file):
+    with pytest.raises(DuplicateVpn, match="duplicate id"):
+        manager.create_vpn({"id": "mininfra", "server": "s.example", "authgroup": "g"})
+
+    assert load_registry(vpns_file, env={}).get("mininfra").server == "vpn.mininfra.example"
+
+
+def test_edit_vpn_keeps_the_password_when_none_is_given(manager):
+    row = manager.edit_vpn("mininfra", {"name": "MININFRA HQ", "username": "other"})
+
+    assert row["name"] == "MININFRA HQ"
+    assert row["has_credentials"] is True
+    assert manager.registry.get("mininfra").username == "other"
+    assert manager.registry.get("mininfra").password == "pw1"
+    assert dotenv_values(manager.env_file)["VPN_MININFRA_PASSWORD"] == "pw1"
+
+
+def test_edit_vpn_in_error_state_clears_the_pin_on_a_new_server(manager, runner):
+    runner.connect_mode = "login-failed"
+    manager.connect("mininfra")
+    assert manager.state_of("mininfra").state == ERROR
+
+    row = manager.edit_vpn("mininfra", {"server": "vpn.moved.example"})
+
+    assert row["server"] == "vpn.moved.example"
+    assert row["servercert"] is None
+    assert row["state"] == ERROR
+
+
+def test_edit_and_delete_are_refused_while_connected(manager, vpns_file):
+    manager.connect("mininfra")
+
+    with pytest.raises(InvalidTransition, match="mininfra is connected"):
+        manager.edit_vpn("mininfra", {"name": "x"})
+    with pytest.raises(InvalidTransition, match="mininfra is connected"):
+        manager.delete_vpn("mininfra")
+
+    assert load_registry(vpns_file, env={}).get("mininfra").name == "MININFRA"
+
+
+def test_edit_and_delete_reject_an_unknown_id(manager):
+    with pytest.raises(UnknownVpn, match="unknown vpn: ghost"):
+        manager.edit_vpn("ghost", {"name": "x"})
+    with pytest.raises(UnknownVpn, match="unknown vpn: ghost"):
+        manager.delete_vpn("ghost")
+
+
+def test_delete_vpn_removes_the_entry_the_credentials_and_the_log(manager, vpns_file, state_dir):
+    (state_dir / "rica.log").write_text("[t] old output\n")
+
+    manager.delete_vpn("rica")
+
+    assert [s["id"] for s in manager.snapshot()] == ["mininfra"]
+    assert load_registry(vpns_file, env={}).ids() == ["mininfra"]
+    assert not (state_dir / "rica.log").exists()
+    assert "VPN_RICA_PASSWORD" not in dotenv_values(manager.env_file)
+    assert "VPN_RICA_PASSWORD" not in manager.env
+    assert dotenv_values(manager.env_file)["VPN_MININFRA_PASSWORD"] == "pw1"
+
+
+def test_delete_vpn_is_refused_while_openconnect_is_running(manager, state_dir, runner):
+    (state_dir / "mininfra.pid").write_text("5555\n")
+    runner.alive.add(5555)
+    assert manager.snapshot_one("mininfra")["state"] == ERROR
+
+    with pytest.raises(InvalidTransition, match="disconnect it first"):
+        manager.delete_vpn("mininfra")
+
+    assert (state_dir / "mininfra.pid").exists()
+    assert manager.registry.ids() == ["mininfra", "rica"]

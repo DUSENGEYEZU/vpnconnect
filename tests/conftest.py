@@ -4,7 +4,7 @@ from app import create_app
 from app.config import Config
 from app.services.registry import load_registry
 from app.services.tunnel import TunnelManager
-from tests.fakes import ENV, VPNS_YAML, FakeClock, FakeRunner, ImmediateThread
+from tests.fakes import ENV, ENV_TEXT, VPNS_YAML, FakeClock, FakeRunner, ImmediateThread
 
 
 @pytest.fixture
@@ -22,6 +22,13 @@ def vpns_file(tmp_path):
 
 
 @pytest.fixture
+def env_file(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text(ENV_TEXT)
+    return path
+
+
+@pytest.fixture
 def runner(state_dir):
     return FakeRunner(state_dir)
 
@@ -32,11 +39,13 @@ def clock():
 
 
 @pytest.fixture
-def manager(vpns_file, runner, state_dir, clock):
+def manager(vpns_file, runner, state_dir, clock, env_file):
     return TunnelManager(
         load_registry(vpns_file, ENV),
         runner,
         state_dir,
+        env_file=env_file,
+        env=dict(ENV),
         connect_timeout=30,
         poll_interval=0.5,
         pid_alive=lambda pid: pid in runner.alive,

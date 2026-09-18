@@ -27,6 +27,9 @@ ENV = {
     "VPN_RICA_PASSWORD": "pw2",
 }
 
+# What a .env with those credentials looks like, for tests that edit the file.
+ENV_TEXT = "SECRET_KEY=test-secret\n" + "".join(f"{key}={value}\n" for key, value in ENV.items())
+
 PROBE_WITH_PIN = (
     'Certificate from VPN server "vpn.rica.example" failed verification.\n'
     "To trust this server in future, perhaps add this to your command line:\n"

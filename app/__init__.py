@@ -48,7 +48,12 @@ def build_manager(config: dict) -> TunnelManager:
         disconnect_grace=config["DISCONNECT_GRACE"],
     )
     return TunnelManager(
-        registry, runner, Path(config["STATE_DIR"]), connect_timeout=config["CONNECT_TIMEOUT"]
+        registry,
+        runner,
+        Path(config["STATE_DIR"]),
+        env_file=config["ENV_FILE"],
+        env=os.environ,
+        connect_timeout=config["CONNECT_TIMEOUT"],
     )
 
 

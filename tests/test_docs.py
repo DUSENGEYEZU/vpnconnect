@@ -77,3 +77,31 @@ def test_openapi_spec_documents_every_vpn_endpoint(spec):
     assert "202" in paths["/api/v1/vpns/connect-all"]["post"]["responses"]
     assert "202" in paths["/api/v1/vpns/disconnect-all"]["post"]["responses"]
     assert set(paths["/api/v1/vpns/{vpn_id}/log"]["get"]["responses"]) == {"200", "404"}
+
+
+def test_openapi_spec_documents_the_editor_endpoints(spec):
+    paths = spec["paths"]
+
+    assert set(paths["/api/v1/vpns"]["post"]["responses"]) == {"201", "400", "409"}
+    assert set(paths["/api/v1/vpns/{vpn_id}"]["put"]["responses"]) == {"200", "400", "404", "409"}
+    assert set(paths["/api/v1/vpns/{vpn_id}"]["delete"]["responses"]) == {"204", "404", "409"}
+
+
+def test_openapi_spec_defines_write_only_credential_schemas(spec):
+    schemas = spec["components"]["schemas"]
+
+    assert {"VpnCreate", "VpnUpdate"} <= set(schemas)
+    create = schemas["VpnCreate"]
+    assert create["required"] == ["id", "server", "authgroup"]
+    assert set(create["properties"]) == {
+        "id",
+        "name",
+        "server",
+        "authgroup",
+        "routes",
+        "username",
+        "password",
+    }
+    assert create["properties"]["password"]["writeOnly"] is True
+    assert create["properties"]["username"]["writeOnly"] is True
+    assert "id" not in schemas["VpnUpdate"]["properties"]
