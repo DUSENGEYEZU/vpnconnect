@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from app.services import tunnel
@@ -195,6 +197,60 @@ def test_timeout_keeps_the_pid_file_when_the_helper_is_gone(manager, runner, sta
     assert s.state == ERROR
     assert s.message == f"timed out after 30 s; {tunnel.HELPER_HINT}"
     assert (state_dir / "mininfra.pid").exists()
+
+
+def test_refused_connect_script_fails_fast_with_the_refusal(manager, runner, clock):
+    """openconnect ignores a failing connect script and backgrounds anyway, so
+    the interface can never appear: stop on the refusal instead of waiting.
+    """
+    refusal = (
+        "vpnconnect: server pushed a full tunnel and no routes are configured "
+        "for this VPN; refusing to take the default route"
+    )
+    runner.connect_mode = "no-iface"
+    runner.log_text = (
+        f"[t] Configured as 10.9.9.9, with SSL connected\n[t] {refusal}\n"
+        "[t] Script '/usr/local/libexec/vpnconnect/vpnc-split.sh' returned error 1\n"
+    )
+
+    manager.connect("mininfra")
+
+    s = manager.state_of("mininfra")
+    assert s.state == ERROR
+    assert s.message == refusal
+    assert clock.now == 0.0  # seen on the first poll, no waiting
+    assert ("disconnect", "mininfra") in runner.calls
+
+
+def test_connect_worker_exception_is_logged_with_the_vpn_id(manager, runner, caplog):
+    def boom(vpn):
+        raise RuntimeError("kaboom")
+
+    runner.connect = boom
+
+    with caplog.at_level(logging.ERROR):
+        manager.connect("mininfra")
+
+    assert manager.state_of("mininfra").message == "RuntimeError: kaboom"
+    assert "mininfra" in caplog.text
+    assert "RuntimeError: kaboom" in caplog.text
+    assert "Traceback" in caplog.text
+
+
+def test_disconnect_worker_exception_is_logged_with_the_vpn_id(manager, runner, caplog):
+    manager.connect("mininfra")
+
+    def boom(vpn_id):
+        raise RuntimeError("no such luck")
+
+    runner.disconnect = boom
+
+    with caplog.at_level(logging.ERROR):
+        manager.disconnect("mininfra")
+
+    assert manager.state_of("mininfra").message == "RuntimeError: no such luck"
+    assert "mininfra" in caplog.text
+    assert "Traceback" in caplog.text
 
 
 def test_helper_unavailable_gives_setup_hint(manager, runner):

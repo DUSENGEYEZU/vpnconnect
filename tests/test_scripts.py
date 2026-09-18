@@ -265,7 +265,8 @@ FAKE_OPENCONNECT = """#!/bin/bash
 # Fake openconnect for tests. Understands the flags vpnconnect-helper passes.
 #   probe (no --passwd-on-stdin): print a certificate pin, exit 1
 #   password "good": background a sleeper named openconnect, write the pid file,
-#                    run --script with reason=connect, print the success line, exit 0
+#                    run --script with reason=connect and exit 0 whatever the
+#                    script returned, exactly as openconnect does
 #   any other password: "Login failed.", exit 1
 pidfile=""; script=""; passwd_on_stdin=0
 for arg in "$@"; do
@@ -289,11 +290,11 @@ if [ "$password" != "good" ]; then
 fi
 ( exec -a openconnect sleep 300 ) &
 echo $! > "$pidfile"
-if ! reason=connect TUNDEV=utun9 INTERNAL_IP4_ADDRESS=10.9.9.9 CISCO_SPLIT_INC=1 "$script"; then
-  echo "Script '$script' returned error 1"
-  exit 1
-fi
 echo "Configured as 10.9.9.9, with SSL connected and DTLS in progress"
+# openconnect discards the connect script's exit code: it logs the error and
+# leaves the tun device up with no address or routes.
+reason=connect TUNDEV=utun9 INTERNAL_IP4_ADDRESS=10.9.9.9 CISCO_SPLIT_INC=1 "$script" \
+  || echo "Script '$script' returned error $?"
 echo "Continuing in background; pid $(cat "$pidfile")"
 exit 0
 """
@@ -391,6 +392,21 @@ def test_helper_connect_success_writes_pid_log_and_iface(helper):
     assert "good" not in log
     assert "Configured as 10.9.9.9" in log
     assert (state / "mininfra.iface").read_text() == "utun9 10.9.9.9\n"
+
+
+def test_connect_script_failure_still_backgrounds_and_writes_the_pid(helper, tmp_path):
+    """openconnect discards the connect script's exit code: it logs the error,
+    keeps the tun device up, backgrounds and writes the pid file.
+    """
+    installed, state = helper
+    (tmp_path / "vpnc-script").write_text("#!/bin/bash\nexit 1\n")
+
+    proc = run_helper(installed, *CONNECT_ARGS, stdin="good\n")
+
+    assert proc.returncode == 0, proc.stderr
+    assert "returned error 1" in (state / "mininfra.log").read_text()
+    assert status.pid_alive(int((state / "mininfra.pid").read_text()))
+    assert not (state / "mininfra.iface").exists()
 
 
 def test_helper_connect_trusted_ca_omits_servercert_flag(helper):

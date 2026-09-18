@@ -14,6 +14,7 @@ restarts and notices tunnels that drop on their own.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -31,6 +32,8 @@ CONNECTING = "connecting"
 CONNECTED = "connected"
 DISCONNECTING = "disconnecting"
 ERROR = "error"
+
+logger = logging.getLogger(__name__)
 
 HELPER_HINT = "privilege helper not available: run sudo scripts/setup-privileges.sh"
 PIN_HINT = "(delete servercert for this VPN in vpns.yaml to trust the new certificate)"
@@ -274,6 +277,7 @@ class TunnelManager:
         except TunnelError as exc:
             self._set(vpn.id, ERROR, message=str(exc))
         except Exception as exc:  # noqa: BLE001 - a worker must always leave a visible state
+            logger.exception("%s: connect failed", vpn.id)
             self._set(vpn.id, ERROR, message=f"{type(exc).__name__}: {exc}")
 
     def _wait_for_tunnel(self, vpn_id: str) -> None:
@@ -292,20 +296,27 @@ class TunnelManager:
                     vpn_id, ERROR, message=message or "openconnect exited before the tunnel came up"
                 )
                 return
+            # openconnect ignores a failing connect script and backgrounds with
+            # an unconfigured tun device, so no interface will ever appear.
+            refused = st.script_failure(self._log_text(vpn_id))
+            if refused is not None:
+                short = reason = refused
+                break
             if self._clock() >= deadline:
+                short = f"timed out after {int(self.connect_timeout)} s"
+                detail = self._failure_message(vpn_id) or "no output from openconnect"
+                reason = f"{short}: {detail}"
                 break
             self._sleep(self.poll_interval)
-        timed_out = f"timed out after {int(self.connect_timeout)} s"
-        detail = self._failure_message(vpn_id) or "no output from openconnect"
         try:
             self.runner.disconnect(vpn_id)
         except HelperUnavailable:
             # Nothing can stop the process now, so keep the pid file: refresh()
             # still reports it instead of forgetting a running tunnel.
-            self._set(vpn_id, ERROR, message=f"{timed_out}; {HELPER_HINT}")
+            self._set(vpn_id, ERROR, message=f"{short}; {HELPER_HINT}")
             return
         self._clear_files(vpn_id)
-        self._set(vpn_id, ERROR, message=f"{timed_out}: {detail}")
+        self._set(vpn_id, ERROR, message=reason)
 
     def _disconnect_worker(self, vpn_id: str) -> None:
         try:
@@ -315,11 +326,14 @@ class TunnelManager:
         except HelperUnavailable:
             self._set(vpn_id, ERROR, message=HELPER_HINT)
         except Exception as exc:  # noqa: BLE001
+            logger.exception("%s: disconnect failed", vpn_id)
             self._set(vpn_id, ERROR, message=f"{type(exc).__name__}: {exc}")
 
+    def _log_text(self, vpn_id: str) -> str:
+        return "\n".join(st.read_log_tail(self.state_dir, vpn_id))
+
     def _failure_message(self, vpn_id: str, extra: str = "") -> str | None:
-        log = "\n".join(st.read_log_tail(self.state_dir, vpn_id))
-        message = st.parse_failure(log) or (extra.strip() or None)
+        message = st.parse_failure(self._log_text(vpn_id)) or (extra.strip() or None)
         if message and "failed verification" in message:
             message = f"{message} {PIN_HINT}"
         return message

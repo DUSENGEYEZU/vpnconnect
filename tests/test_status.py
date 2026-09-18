@@ -99,6 +99,26 @@ def test_parse_failure_prefers_specific_messages_then_falls_back_to_last_line(lo
     assert status.parse_failure(log) == expected
 
 
+@pytest.mark.parametrize(
+    ("log", "expected"),
+    [
+        (
+            "vpnconnect: server pushed a full tunnel and no routes are configured\n"
+            "Script '/x' returned error 1\n",
+            "vpnconnect: server pushed a full tunnel and no routes are configured",
+        ),
+        (
+            "[2026-09-17 14:00:01] Script '/x' returned error 1\n",
+            "Script '/x' returned error 1",
+        ),
+        ("Configured as 10.9.9.9, with SSL connected\nLogin failed.\n", None),
+        ("", None),
+    ],
+)
+def test_script_failure_only_matches_a_failed_connect_script(log, expected):
+    assert status.script_failure(log) == expected
+
+
 def test_pin_from_probe():
     out = (
         "To trust this server in future, perhaps add this to your command line:\n"

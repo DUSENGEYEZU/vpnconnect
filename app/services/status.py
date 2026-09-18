@@ -25,6 +25,14 @@ FAILURE_PATTERNS = (
     re.compile(r"sudo: .*"),
 )
 
+# openconnect discards the connect script's exit code: on a refusal it leaves
+# the tun device up with no address or routes, backgrounds and writes the pid
+# file. No interface can appear after one of these lines, so waiting is futile.
+SCRIPT_FAILURE_PATTERNS = (
+    re.compile(r"vpnconnect: .*"),
+    re.compile(r"Script '.*' returned error \d+"),
+)
+
 # Any of these in a probe's output proves the TLS session reached the server.
 REACHABLE_PATTERNS = (
     re.compile(r"Connected to HTTPS on"),
@@ -104,6 +112,16 @@ def parse_failure(log_text: str) -> str | None:
             if pattern.search(line):
                 return strip_timestamp(line)
     return strip_timestamp(lines[-1])
+
+
+def script_failure(log_text: str) -> str | None:
+    """The connect script's own refusal or error line in a log, or None."""
+    lines = [line for line in log_text.splitlines() if line.strip()]
+    for pattern in SCRIPT_FAILURE_PATTERNS:
+        for line in reversed(lines):
+            if pattern.search(line):
+                return strip_timestamp(line)
+    return None
 
 
 def pin_from_probe(output: str) -> str | None:

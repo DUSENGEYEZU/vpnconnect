@@ -208,8 +208,9 @@ variables (`reason`, `TUNDEV`, `CISCO_SPLIT_INC*`, …). The wrapper:
    `CISCO_SPLIT_INC_<i>_ADDR/_MASK/_MASKLEN` for each triple.
 3. Else print `vpnconnect: server pushed a full tunnel and no routes are
    configured for this VPN; refusing to take the default route` to stderr and
-   exit 1. `openconnect` treats a failed connect script as fatal, so the
-   connection aborts and the message lands in the log.
+   exit 1. `openconnect` discards the connect script's exit code, so the
+   tunnel is left with no address or routes; the message lands in the log and
+   the app aborts the connect as soon as it reads that line.
 4. Run `/opt/homebrew/etc/vpnc/vpnc-script "$@"` and keep its exit code.
 5. Record the interface: on `reason=connect` or `reconnect`, and only if
    vpnc-script succeeded, write `"$TUNDEV $INTERNAL_IP4_ADDRESS"` to

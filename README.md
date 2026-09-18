@@ -20,7 +20,8 @@ internal network you need, with normal internet traffic staying on Wi-Fi.
 - A wrapper around `vpnc-script` guarantees **IPv4 split routing**: if a server
   pushes a full tunnel — including a split list that contains a default route —
   only the `routes` you configured for that VPN go through it. If you
-  configured no routes, the connection is refused instead of hijacking your
+  configured no routes, the wrapper installs none and the app aborts the
+  connect as soon as the refusal reaches the log, instead of hijacking your
   default route. IPv6 is disabled on every tunnel (`--disable-ipv6`), so a
   server cannot take the IPv6 default route either.
 - The first connect to a server probes its certificate pin and stores it in
