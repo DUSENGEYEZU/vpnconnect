@@ -2,9 +2,10 @@ import logging
 
 import pytest
 
+from app.services import status as st
 from app.services import tunnel
 from app.services.registry import load_registry
-from app.services.runner import HelperUnavailable
+from app.services.runner import HelperUnavailable, RunResult
 from app.services.tunnel import (
     CONNECTED,
     DISCONNECTED,
@@ -177,6 +178,66 @@ def test_timeout_disconnects_and_reports(manager, runner):
     assert s["state"] == ERROR
     assert s["message"].startswith("timed out after 30 s: Configured as 10.9.9.9")
     assert ("disconnect", "mininfra") in runner.calls
+
+
+STALLED = "helper did not return within 45 s"
+
+
+def stalling_connect(runner, state_dir, pid=7001):
+    """The helper has not returned yet; openconnect already wrote its pid file."""
+
+    def connect(vpn):
+        runner.calls.append(("connect", vpn.id))
+        (state_dir / f"{vpn.id}.pid").write_text(f"{pid}\n")
+        runner.alive.add(pid)
+        return RunResult(124, STALLED)
+
+    runner.connect = connect
+    return pid
+
+
+def test_helper_timeout_adopts_a_late_success(manager, runner, state_dir, clock):
+    """A helper that has not returned may still be starting: keep the state
+    files and let the wait see the tunnel come up.
+    """
+    pid = stalling_connect(runner, state_dir)
+
+    def sleep_then_finish(seconds):
+        clock.sleep(seconds)
+        (state_dir / "mininfra.iface").write_text("utun7 10.7.7.7\n")
+
+    manager._sleep = sleep_then_finish
+
+    manager.connect("mininfra")
+
+    s = manager.state_of("mininfra")
+    assert s.state == CONNECTED
+    assert (s.interface, s.ip) == ("utun7", "10.7.7.7")
+    assert st.read_pid(state_dir, "mininfra") == pid  # never cleared
+    assert ("disconnect", "mininfra") not in runner.calls
+
+
+def test_helper_timeout_that_never_comes_up_ends_in_the_timeout_path(
+    manager, runner, state_dir, clock
+):
+    stalling_connect(runner, state_dir)
+    seen = {}
+    fake_disconnect = runner.disconnect
+
+    def disconnect(vpn_id):
+        seen["pid_file"] = st.pid_path(state_dir, vpn_id).exists()
+        return fake_disconnect(vpn_id)
+
+    runner.disconnect = disconnect
+
+    manager.connect("mininfra")
+
+    s = manager.state_of("mininfra")
+    assert s.state == ERROR
+    assert STALLED in s.message
+    assert seen["pid_file"] is True  # cleared only on the disconnect path
+    assert not (state_dir / "mininfra.pid").exists()
+    assert clock.now >= 30
 
 
 def test_timeout_keeps_the_pid_file_when_the_helper_is_gone(manager, runner, state_dir):

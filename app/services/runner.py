@@ -14,6 +14,9 @@ from typing import Protocol
 
 from app.services.registry import TRUSTED_CA, VpnDef
 
+# Exit code for "the helper has not returned"; the tunnel may still be coming up.
+HELPER_TIMEOUT_RC = 124
+
 
 @dataclass(frozen=True)
 class RunResult:
@@ -81,7 +84,7 @@ class SudoHelperRunner:
             # Never signal the child; the caller's timeout path disconnects
             # once a pid file exists and reconciliation adopts a late success.
             _abandon(proc)
-            return RunResult(124, f"helper did not return within {timeout} s")
+            return RunResult(HELPER_TIMEOUT_RC, f"helper did not return within {timeout} s")
         output = (out or "") + (err or "")
         if proc.returncode != 0 and output.lstrip().startswith("sudo:"):
             raise HelperUnavailable(output.strip())

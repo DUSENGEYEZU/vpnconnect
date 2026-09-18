@@ -25,7 +25,7 @@ from typing import Any
 
 from app.services import status as st
 from app.services.registry import TRUSTED_CA, Registry, VpnDef, save_servercert
-from app.services.runner import HelperRunner, HelperUnavailable
+from app.services.runner import HELPER_TIMEOUT_RC, HelperRunner, HelperUnavailable
 
 DISCONNECTED = "disconnected"
 CONNECTING = "connecting"
@@ -262,6 +262,13 @@ class TunnelManager:
             vpn = self._ensure_servercert(vpn)
             self._clear_files(vpn.id)
             result = self.runner.connect(vpn)
+            if result.returncode == HELPER_TIMEOUT_RC:
+                # The helper has not returned, so openconnect may still be
+                # starting: leave the state files alone (the pid file is the
+                # only handle on a process this user cannot signal) and let the
+                # wait adopt a late success or run into the timeout path.
+                self._wait_for_tunnel(vpn.id, stalled=result.output.strip())
+                return
             if result.returncode != 0:
                 self._clear_files(vpn.id)
                 message = self._failure_message(vpn.id, result.output)
@@ -280,7 +287,7 @@ class TunnelManager:
             logger.exception("%s: connect failed", vpn.id)
             self._set(vpn.id, ERROR, message=f"{type(exc).__name__}: {exc}")
 
-    def _wait_for_tunnel(self, vpn_id: str) -> None:
+    def _wait_for_tunnel(self, vpn_id: str, stalled: str = "") -> None:
         deadline = self._clock() + self.connect_timeout
         while True:
             pid = st.read_pid(self.state_dir, vpn_id)
@@ -304,7 +311,7 @@ class TunnelManager:
                 break
             if self._clock() >= deadline:
                 short = f"timed out after {int(self.connect_timeout)} s"
-                detail = self._failure_message(vpn_id) or "no output from openconnect"
+                detail = stalled or self._failure_message(vpn_id) or "no output from openconnect"
                 reason = f"{short}: {detail}"
                 break
             self._sleep(self.poll_interval)
