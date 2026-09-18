@@ -43,6 +43,20 @@
   pre.log { margin: 0; padding: 10px 12px; background: #111827; color: #e5e7eb; font-size: 12px;
             max-height: 260px; overflow: auto; white-space: pre-wrap; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .modal { position: fixed; inset: 0; background: rgba(17, 24, 39, .45); display: flex;
+           align-items: flex-start; justify-content: center; padding: 32px 16px; overflow: auto; }
+  .modal[hidden] { display: none; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+           padding: 16px 18px; width: 100%; max-width: 440px; }
+  .panel h2 { font-size: 17px; margin: 0 0 4px; }
+  .panel label { display: block; font-size: 12px; text-transform: uppercase;
+                 letter-spacing: .04em; color: var(--muted); margin-top: 12px; }
+  .panel input, .panel textarea { width: 100%; font: inherit; padding: 6px 8px; margin-top: 2px;
+           border: 1px solid var(--border); border-radius: 6px; background: var(--card);
+           color: var(--text); }
+  .panel input:read-only { background: var(--bg); color: var(--muted); }
+  .panel .hint { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .panel .actions { margin-top: 18px; }
   #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
            background: #111827; color: #fff; padding: 8px 14px; border-radius: 6px;
            font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
@@ -58,6 +72,7 @@
         <span id="refreshed"></span></div>
     </div>
     <div class="actions">
+      <button id="add-vpn">Add VPN</button>
       <button id="connect-all" class="primary">Connect all</button>
       <button id="disconnect-all">Disconnect all</button>
     </div>
@@ -71,11 +86,43 @@
     </table>
   </div>
 </main>
+<div id="vpn-form" class="modal" hidden>
+  <form class="panel" id="vpn-form-fields" autocomplete="off">
+    <h2 id="vpn-form-title">Add VPN</h2>
+    <div class="hint">Saved to vpns.yaml and .env; both files stay the source of truth.</div>
+    <label for="vpn-id">Id</label>
+    <input id="vpn-id" name="id" required pattern="[a-z0-9][a-z0-9_-]*">
+    <div class="hint">Lower case, digits, <code>-</code> and <code>_</code>. Names the .env
+      variables, so it cannot change later.</div>
+    <label for="vpn-name">Name</label>
+    <input id="vpn-name" name="name" placeholder="defaults to the id">
+    <label for="vpn-server">Server</label>
+    <input id="vpn-server" name="server" required placeholder="vpn.example.gov.rw">
+    <label for="vpn-authgroup">Auth group</label>
+    <input id="vpn-authgroup" name="authgroup" required>
+    <label for="vpn-routes">Routes</label>
+    <textarea id="vpn-routes" name="routes" rows="3" placeholder="10.10.0.0/16"></textarea>
+    <div class="hint">One IPv4 CIDR per line. Only these networks go through the tunnel.</div>
+    <label for="vpn-username">Username</label>
+    <input id="vpn-username" name="username" autocomplete="off">
+    <label for="vpn-password">Password</label>
+    <input id="vpn-password" type="password" name="password" autocomplete="new-password">
+    <div class="hint">Leave blank to keep the stored password. Passwords are written to .env
+      only and never shown again.</div>
+    <div class="actions">
+      <button type="submit" class="primary">Save</button>
+      <button type="button" id="vpn-cancel">Cancel</button>
+    </div>
+  </form>
+</div>
 <div id="toast"></div>
 <script>
 const API = "/api/v1/vpns";
 const openLogs = new Set();
 const logs = {};
+const form = document.getElementById("vpn-form");
+let rows = [];      // the last snapshot, so Edit can prefill from it
+let editing = null; // id being edited, or null while adding
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
@@ -90,17 +137,49 @@ function toast(text) {
   setTimeout(() => el.classList.remove("show"), 2500);
 }
 
-async function api(method, path) {
-  const res = await fetch(path, { method });
+async function api(method, path, payload) {
+  const options = { method };
+  if (payload !== undefined) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(payload);
+  }
+  const res = await fetch(path, options);
+  if (res.status === 204) return {};
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
   return body;
+}
+
+function field(name) {
+  return document.getElementById(`vpn-${name}`);
+}
+
+function openForm(vpn) {
+  editing = vpn ? vpn.id : null;
+  document.getElementById("vpn-form-title").textContent = vpn ? `Edit ${vpn.name}` : "Add VPN";
+  field("id").value = vpn ? vpn.id : "";
+  field("id").readOnly = Boolean(vpn);
+  field("name").value = vpn ? vpn.name : "";
+  field("server").value = vpn ? vpn.server : "";
+  field("authgroup").value = vpn ? vpn.authgroup : "";
+  field("routes").value = vpn ? vpn.routes.join("\n") : "";
+  field("username").value = "";
+  field("password").value = "";
+  form.hidden = false;
+  field(vpn ? "name" : "id").focus();
+}
+
+function closeForm() {
+  form.hidden = true;
+  editing = null;
+  field("password").value = "";
 }
 
 function row(v) {
   const busy = v.state === "connecting" || v.state === "disconnecting";
   const canConnect = v.has_credentials && (v.state === "disconnected" || v.state === "error");
   const canDisconnect = v.state === "connected" || v.state === "error";
+  const canEdit = v.state === "disconnected" || v.state === "error";
   const creds = v.has_credentials
     ? ""
     : `<div class="msg error">Missing ${esc(v.missing_credentials.join(", "))} in .env</div>`;
@@ -123,6 +202,8 @@ function row(v) {
         <button data-act="connect" data-id="${esc(v.id)}" ${canConnect && !busy ? "" : "disabled"}>Connect</button>
         <button data-act="disconnect" data-id="${esc(v.id)}" ${canDisconnect && !busy ? "" : "disabled"}>Disconnect</button>
         <button data-act="log" data-id="${esc(v.id)}">${logOpen ? "Hide log" : "Log"}</button>
+        <button data-act="edit" data-id="${esc(v.id)}" ${canEdit ? "" : "disabled"}>Edit</button>
+        <button data-act="delete" data-id="${esc(v.id)}" ${canEdit ? "" : "disabled"}>Delete</button>
       </td>
     </tr>${logRow}`;
 }
@@ -130,6 +211,7 @@ function row(v) {
 async function refresh() {
   try {
     const { vpns } = await api("GET", API);
+    rows = vpns;
     await Promise.all([...openLogs].map(async (id) => {
       logs[id] = (await api("GET", `${API}/${id}/log?lines=50`)).lines;
     }));
@@ -149,8 +231,48 @@ document.getElementById("rows").addEventListener("click", async (e) => {
     if (openLogs.has(id)) openLogs.delete(id); else openLogs.add(id);
     return refresh();
   }
+  if (act === "edit") {
+    const vpn = rows.find((v) => v.id === id);
+    return vpn ? openForm(vpn) : refresh();
+  }
+  if (act === "delete") {
+    if (!confirm(`Delete ${id}? Its credentials in .env and its log file go too.`)) return;
+    try {
+      await api("DELETE", `${API}/${id}`);
+      toast(`Deleted ${id}`);
+    } catch (err) { toast(err.message); }
+    return refresh();
+  }
   btn.disabled = true;
   try { await api("POST", `${API}/${id}/${act}`); } catch (err) { toast(err.message); }
+  refresh();
+});
+
+document.getElementById("add-vpn").addEventListener("click", () => openForm(null));
+document.getElementById("vpn-cancel").addEventListener("click", closeForm);
+
+document.getElementById("vpn-form-fields").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const payload = {
+    name: field("name").value.trim(),
+    server: field("server").value.trim(),
+    authgroup: field("authgroup").value.trim(),
+    routes: field("routes").value.split("\n").map((r) => r.trim()).filter(Boolean),
+  };
+  // An empty username or password means "keep the stored one".
+  if (field("username").value.trim()) payload.username = field("username").value.trim();
+  if (field("password").value) payload.password = field("password").value;
+  try {
+    if (editing) {
+      await api("PUT", `${API}/${editing}`, payload);
+      toast(`Saved ${editing}`);
+    } else {
+      payload.id = field("id").value.trim();
+      await api("POST", API, payload);
+      toast(`Added ${payload.id}`);
+    }
+    closeForm();
+  } catch (err) { toast(err.message); }
   refresh();
 });
 
