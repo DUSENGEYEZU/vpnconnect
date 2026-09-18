@@ -308,6 +308,36 @@ def test_dns_without_a_domain_is_not_registered(split, tmp_path):
     assert "without a domain" in proc.stderr
 
 
+def test_dns_values_from_the_gateway_are_filtered_to_plain_names_and_addresses(split, tmp_path):
+    fakebin = fake_dns_tools(tmp_path)
+    evil = "idc.bsc.rw\nset State:/Network/Global/DNS"
+
+    proc, _ = run_split(
+        split,
+        tmp_path,
+        dns_env(
+            tmp_path,
+            CISCO_DEF_DOMAIN=evil,
+            CISCO_SPLIT_DNS="ok.example,bad;domain",
+            INTERNAL_IP4_DNS="10.10.34.10 10.10.34.11;rm",
+        ),
+        path_prefix=fakebin,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    scutil = (tmp_path / "stub.out.scutil").read_text()
+    lines = scutil.splitlines()
+    supplemental = [ln for ln in lines if ln.startswith("d.add SupplementalMatchDomains")]
+    assert len(supplemental) == 1  # an injected newline cannot add a scutil command
+    assert "idc.bsc.rw" in supplemental[0] and "ok.example" in supplemental[0]
+    assert "bad;domain" not in scutil and "State:/Network/Global" not in scutil
+    assert "d.add ServerAddresses * 10.10.34.10" in scutil
+    assert "10.10.34.11;rm" not in scutil
+    dig = (tmp_path / "stub.out.dig").read_text()
+    assert ";rm" not in dig
+    assert not [ln for ln in lines if ln.startswith("set ") and "Global" in ln]
+
+
 def test_disconnect_removes_the_supplemental_dns_entry(split, tmp_path):
     fakebin = fake_dns_tools(tmp_path)
 

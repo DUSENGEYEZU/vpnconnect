@@ -151,15 +151,33 @@ case "${reason:-}" in
 esac
 
 # Register the pushed DNS servers for the VPN's domains only, if they answer.
+# Only plain host names and dotted IPv4 addresses reach scutil and dig; the
+# values come from the VPN gateway.
+clean_words() {
+  local word out=""
+  for word in $1; do
+    case "$word" in
+      *[!A-Za-z0-9.-]*|"") ;;
+      *) out="$out $word" ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+
 register_vpn_dns() {
-  local server responding="" domains
+  local server responding="" domains servers
   [ -n "$VPN_DNS_SERVERS" ] && [ -n "${TUNDEV:-}" ] || return 0
-  domains=$(printf '%s' "$VPN_DNS_DOMAINS" | tr -s ' ' | sed 's/^ //;s/ $//')
+  case "$TUNDEV" in *[!A-Za-z0-9]*) return 0 ;; esac
+  servers=$(clean_words "$VPN_DNS_SERVERS")
+  domains=$(clean_words "$VPN_DNS_DOMAINS")
   if [ -z "$domains" ]; then
     echo "vpnconnect: server pushed DNS $VPN_DNS_SERVERS without a domain; not registering it (it would apply to every lookup)" >&2
     return 0
   fi
-  for server in $VPN_DNS_SERVERS; do
+  for server in $servers; do
+    case "$server" in
+      *[!0-9.]*) continue ;;
+    esac
     if dig +time=1 +tries=1 +short "@$server" "${domains%% *}" SOA >/dev/null 2>&1; then
       responding="$responding $server"
     fi
@@ -181,6 +199,7 @@ EOF
 
 unregister_vpn_dns() {
   [ -n "${TUNDEV:-}" ] || return 0
+  case "$TUNDEV" in *[!A-Za-z0-9]*) return 0 ;; esac
   scutil >/dev/null 2>&1 <<EOF
 open
 remove State:/Network/Service/$TUNDEV/DNS
