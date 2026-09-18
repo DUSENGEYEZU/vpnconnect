@@ -7,8 +7,9 @@
 # VPNCONNECT_ID, VPNCONNECT_STATE_DIR and VPNCONNECT_ROUTES.
 #
 # 1. Split-routing guarantee. When the server pushes a full tunnel (no
-#    CISCO_SPLIT_INC), inject this VPN's configured routes so vpnc-script adds
-#    only those and never a default route. No routes configured: refuse.
+#    CISCO_SPLIT_INC, or a split list that takes the default route), inject this
+#    VPN's configured routes so vpnc-script adds only those and never a default
+#    route. No routes configured: refuse.
 # 2. Record "<TUNDEV> <IP>" in <state>/<id>.iface after a successful connect
 #    so the dashboard can show them; remove the file on disconnect.
 #
@@ -20,6 +21,44 @@ VPNC_SCRIPT="__VPNC_SCRIPT__"
 
 server_sent_split() {
   [ -n "${CISCO_SPLIT_INC:-}" ] && [ "${CISCO_SPLIT_INC}" -ge 1 ] 2>/dev/null
+}
+
+# vpnc-script turns an include of 0.0.0.0 into set_ipv4_default_route, and a
+# masklen of 0 covers every address: either one is a full tunnel wearing a
+# split list. Only called once server_sent_split proved the count is a number.
+server_split_takes_the_default_route() {
+  local i=0 addr len
+  while [ "$i" -lt "$CISCO_SPLIT_INC" ]; do
+    eval "addr=\${CISCO_SPLIT_INC_${i}_ADDR:-}"
+    eval "len=\${CISCO_SPLIT_INC_${i}_MASKLEN:-}"
+    if [ "$addr" = "0.0.0.0" ] || [ "$len" = "0" ]; then
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Drop the server's list entirely so vpnc-script sees only what we inject.
+unset_server_split() {
+  local i=0
+  while [ "$i" -lt "$CISCO_SPLIT_INC" ]; do
+    unset "CISCO_SPLIT_INC_${i}_ADDR" "CISCO_SPLIT_INC_${i}_MASK" \
+      "CISCO_SPLIT_INC_${i}_MASKLEN" "CISCO_SPLIT_INC_${i}_PROTOCOL" \
+      "CISCO_SPLIT_INC_${i}_SPORT" "CISCO_SPLIT_INC_${i}_DPORT"
+    i=$((i + 1))
+  done
+  unset CISCO_SPLIT_INC
+}
+
+# True only for a server list that adds routes without taking the default one.
+usable_server_split() {
+  server_sent_split || return 1
+  if server_split_takes_the_default_route; then
+    unset_server_split
+    return 1
+  fi
+  return 0
 }
 
 inject_routes() {
@@ -42,7 +81,7 @@ inject_routes() {
 
 case "${reason:-}" in
   connect|reconnect)
-    if ! server_sent_split; then
+    if ! usable_server_split; then
       if [ -n "${VPNCONNECT_ROUTES:-}" ]; then
         inject_routes
       else
@@ -53,7 +92,7 @@ case "${reason:-}" in
     ;;
   disconnect)
     # Same environment as on connect so vpnc-script removes exactly what it added.
-    if ! server_sent_split && [ -n "${VPNCONNECT_ROUTES:-}" ]; then
+    if ! usable_server_split && [ -n "${VPNCONNECT_ROUTES:-}" ]; then
       inject_routes
     fi
     ;;

@@ -67,6 +67,9 @@ def test_server_split_routes_are_left_alone(split, tmp_path):
             tmp_path,
             CISCO_SPLIT_INC="2",
             CISCO_SPLIT_INC_0_ADDR="10.1.0.0",
+            CISCO_SPLIT_INC_0_MASKLEN="16",
+            CISCO_SPLIT_INC_1_ADDR="10.2.0.0",
+            CISCO_SPLIT_INC_1_MASKLEN="16",
             VPNCONNECT_ROUTES="10.10.0.0:255.255.0.0:16",
         ),
     )
@@ -74,7 +77,88 @@ def test_server_split_routes_are_left_alone(split, tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert env["CISCO_SPLIT_INC"] == "2"
     assert env["CISCO_SPLIT_INC_0_ADDR"] == "10.1.0.0"
+    assert env["CISCO_SPLIT_INC_1_ADDR"] == "10.2.0.0"
     assert "CISCO_SPLIT_INC_0_MASK" not in env
+
+
+def default_route_include(index, **overrides):
+    """A server split include that vpnc-script turns into a default route."""
+    env = {
+        f"CISCO_SPLIT_INC_{index}_ADDR": "0.0.0.0",
+        f"CISCO_SPLIT_INC_{index}_MASK": "0.0.0.0",
+        f"CISCO_SPLIT_INC_{index}_MASKLEN": "0",
+    }
+    env.update(overrides)
+    return env
+
+
+def test_server_split_with_a_default_route_include_uses_configured_routes(split, tmp_path):
+    proc, env = run_split(
+        split,
+        tmp_path,
+        connect_env(
+            tmp_path,
+            CISCO_SPLIT_INC="2",
+            CISCO_SPLIT_INC_0_ADDR="10.1.0.0",
+            CISCO_SPLIT_INC_0_MASK="255.255.0.0",
+            CISCO_SPLIT_INC_0_MASKLEN="16",
+            VPNCONNECT_ROUTES="10.10.0.0:255.255.0.0:16",
+            **default_route_include(1),
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert env["CISCO_SPLIT_INC"] == "1"
+    assert env["CISCO_SPLIT_INC_0_ADDR"] == "10.10.0.0"
+    assert env["CISCO_SPLIT_INC_0_MASKLEN"] == "16"
+    assert "CISCO_SPLIT_INC_1_ADDR" not in env
+
+
+def test_server_split_with_a_default_route_include_and_no_routes_is_refused(split, tmp_path):
+    proc, env = run_split(
+        split,
+        tmp_path,
+        connect_env(tmp_path, CISCO_SPLIT_INC="1", **default_route_include(0)),
+    )
+
+    assert proc.returncode == 1
+    assert "refusing to take the default route" in proc.stderr
+    assert env == {}  # vpnc-script never ran
+    assert not (tmp_path / "x.iface").exists()
+
+
+def test_masklen_zero_include_is_also_a_default_route(split, tmp_path):
+    proc, _ = run_split(
+        split,
+        tmp_path,
+        connect_env(
+            tmp_path,
+            CISCO_SPLIT_INC="1",
+            CISCO_SPLIT_INC_0_ADDR="10.1.0.0",
+            CISCO_SPLIT_INC_0_MASK="0.0.0.0",
+            CISCO_SPLIT_INC_0_MASKLEN="0",
+        ),
+    )
+
+    assert proc.returncode == 1
+
+
+def test_disconnect_replaces_a_default_route_include_the_same_way(split, tmp_path):
+    proc, env = run_split(
+        split,
+        tmp_path,
+        connect_env(
+            tmp_path,
+            reason="disconnect",
+            CISCO_SPLIT_INC="1",
+            VPNCONNECT_ROUTES="10.10.0.0:255.255.0.0:16",
+            **default_route_include(0),
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert env["CISCO_SPLIT_INC"] == "1"
+    assert env["CISCO_SPLIT_INC_0_ADDR"] == "10.10.0.0"
 
 
 def test_full_tunnel_with_configured_routes_is_forced_to_split(split, tmp_path):
@@ -285,6 +369,7 @@ def test_helper_probe_prints_openconnect_output(helper):
     assert "pin-sha256:FAKEPIN" in proc.stdout
     assert "--authgroup=Staff" in proc.stdout
     assert "--passwd-on-stdin" not in proc.stdout
+    assert "--disable-ipv6" not in proc.stdout  # the probe never builds a tunnel
 
 
 def test_helper_connect_success_writes_pid_log_and_iface(helper):
@@ -301,6 +386,8 @@ def test_helper_connect_success_writes_pid_log_and_iface(helper):
     assert "--authgroup=Staff" in log
     assert "--passwd-on-stdin" in log
     assert "--background" in log
+    # v1 is IPv4-only: without this a server can still push an IPv6 default route.
+    assert "--disable-ipv6" in log
     assert "good" not in log
     assert "Configured as 10.9.9.9" in log
     assert (state / "mininfra.iface").read_text() == "utun9 10.9.9.9\n"

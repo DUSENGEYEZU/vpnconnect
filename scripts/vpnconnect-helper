@@ -74,9 +74,12 @@ run_openconnect() {
   # $1 server, $2 authgroup, $3 protocol, $4 username, $5 pidfile, $6 logfile, rest: extra flags.
   local server="$1" authgroup="$2" protocol="$3" username="$4" pidfile="$5" logfile="$6"
   shift 6
+  # --disable-ipv6: v1 guarantees split routing for IPv4 only, and vpnc-script
+  # takes the IPv6 default route whenever the server assigns an IPv6 address.
   "$OPENCONNECT" "https://$server" --protocol="$protocol" --user="$username" \
     --authgroup="$authgroup" --passwd-on-stdin --non-inter --timestamp \
-    --background --pid-file="$pidfile" --script="$VPNC_SPLIT" "$@" >>"$logfile" 2>&1
+    --disable-ipv6 --background --pid-file="$pidfile" --script="$VPNC_SPLIT" \
+    "$@" >>"$logfile" 2>&1
 }
 
 cmd_connect() {

@@ -17,10 +17,12 @@ internal network you need, with normal internet traffic staying on Wi-Fi.
   vpnconnect-helper`) that a single `sudoers.d` line lets your user run without
   a password. It runs `openconnect` with the password on stdin, in the
   background, with a pid file and a log file per VPN.
-- A wrapper around `vpnc-script` guarantees **split routing**: if a server
-  pushes a full tunnel, only the `routes` you configured for that VPN go
-  through it. If a server pushes a full tunnel and you configured no routes,
-  the connection is refused instead of hijacking your default route.
+- A wrapper around `vpnc-script` guarantees **IPv4 split routing**: if a server
+  pushes a full tunnel — including a split list that contains a default route —
+  only the `routes` you configured for that VPN go through it. If you
+  configured no routes, the connection is refused instead of hijacking your
+  default route. IPv6 is disabled on every tunnel (`--disable-ipv6`), so a
+  server cannot take the IPv6 default route either.
 - The first connect to a server probes its certificate pin and stores it in
   `vpns.yaml` as `servercert`. Later connects verify against it.
 
