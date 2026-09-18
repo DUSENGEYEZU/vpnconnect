@@ -234,9 +234,14 @@ added; `pre-init` and `attempt-reconnect` pass straight through, since no route
 information exists yet at that point. The stock
 vpnc-script only sets a default route when `CISCO_SPLIT_INC` is unset or an
 include is `0.0.0.0`, which is what makes steps 1 and 2 sufficient. IPv6 is
-disabled with `--disable-ipv6`, so vpnc-script never sets an IPv6 default route. DNS: vpnc-script registers the tunnel's DNS
-servers under `State:/Network/Service/<TUNDEV>/DNS`, one entry per tunnel, so
-several tunnels coexist.
+disabled with `--disable-ipv6`, so vpnc-script never sets an IPv6 default route. DNS: the wrapper hides `INTERNAL_IP4_DNS` from
+vpnc-script (whose macOS split-mode handling prepends the servers to the
+primary resolver, rewrites the Wi-Fi DNS and marks the tunnel OverridePrimary)
+and instead adds a /32 route per pushed server and registers them under
+`State:/Network/Service/<TUNDEV>/DNS` with `SupplementalMatchDomains` set to
+the pushed domain(s), only if one server answers through the tunnel; one entry
+per tunnel, removed on disconnect, so several tunnels coexist and the primary
+resolver is never changed.
 
 ## 9. Application layer
 

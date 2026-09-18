@@ -33,10 +33,11 @@ def split(tmp_path):
     return wrapper
 
 
-def run_split(wrapper, tmp_path, extra_env, args=()):
+def run_split(wrapper, tmp_path, extra_env, args=(), path_prefix=None):
     out = tmp_path / "stub.out"
     out.unlink(missing_ok=True)
-    env = {"PATH": os.environ["PATH"], "STUB_OUT": str(out), **extra_env}
+    path = os.environ["PATH"] if path_prefix is None else f"{path_prefix}:{os.environ['PATH']}"
+    env = {"PATH": path, "STUB_OUT": str(out), **extra_env}
     proc = subprocess.run([str(wrapper), *args], env=env, capture_output=True, text=True)
     recorded = {}
     if out.exists():
@@ -220,6 +221,105 @@ def test_disconnect_adds_the_same_dns_host_routes_and_skips_junk(split, tmp_path
     assert env["CISCO_SPLIT_INC"] == "2"
     assert env["CISCO_SPLIT_INC_1_ADDR"] == "10.10.34.10"
     assert "CISCO_SPLIT_INC_2_ADDR" not in env
+
+
+def fake_dns_tools(tmp_path):
+    """A scutil that records its stdin and a dig whose exit code FAKE_DIG_EXIT controls."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir(exist_ok=True)
+    (fakebin / "scutil").write_text('#!/bin/bash\ncat >> "${STUB_OUT}.scutil"\n')
+    (fakebin / "dig").write_text(
+        '#!/bin/bash\necho "$*" >> "${STUB_OUT}.dig"\nexit "${FAKE_DIG_EXIT:-0}"\n'
+    )
+    for f in fakebin.iterdir():
+        f.chmod(0o755)
+    return fakebin
+
+
+def dns_env(tmp_path, **overrides):
+    base = {
+        "CISCO_SPLIT_INC": "1",
+        "CISCO_SPLIT_INC_0_ADDR": "10.1.0.0",
+        "CISCO_SPLIT_INC_0_MASKLEN": "16",
+        "INTERNAL_IP4_DNS": "10.10.34.10 10.10.34.11",
+        "CISCO_DEF_DOMAIN": "idc.bsc.rw",
+    }
+    base.update(overrides)
+    return connect_env(tmp_path, **base)
+
+
+def test_pushed_dns_is_hidden_from_vpnc_script_and_registered_as_supplemental(split, tmp_path):
+    fakebin = fake_dns_tools(tmp_path)
+
+    proc, env = run_split(split, tmp_path, dns_env(tmp_path), path_prefix=fakebin)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "INTERNAL_IP4_DNS" not in env  # vpnc-script's DNS block never runs
+    assert env["CISCO_SPLIT_INC"] == "3"  # the /32 includes were still added
+    scutil = (tmp_path / "stub.out.scutil").read_text()
+    assert "d.add ServerAddresses * 10.10.34.10 10.10.34.11" in scutil
+    assert "d.add SupplementalMatchDomains * idc.bsc.rw" in scutil
+    assert "set State:/Network/Service/utun9/DNS" in scutil
+    assert "OverridePrimary" not in scutil
+    assert "SearchDomains" not in scutil
+    dig = (tmp_path / "stub.out.dig").read_text()
+    assert "@10.10.34.10 idc.bsc.rw SOA" in dig
+
+
+def test_split_dns_domains_join_the_supplemental_list(split, tmp_path):
+    fakebin = fake_dns_tools(tmp_path)
+
+    proc, _ = run_split(
+        split,
+        tmp_path,
+        dns_env(tmp_path, CISCO_SPLIT_DNS="mininfra.gov.rw,rha.gov.rw"),
+        path_prefix=fakebin,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    scutil = (tmp_path / "stub.out.scutil").read_text()
+    assert "d.add SupplementalMatchDomains * idc.bsc.rw mininfra.gov.rw rha.gov.rw" in scutil
+
+
+def test_dns_that_does_not_answer_through_the_tunnel_is_not_registered(split, tmp_path):
+    fakebin = fake_dns_tools(tmp_path)
+
+    proc, env = run_split(
+        split, tmp_path, dns_env(tmp_path, FAKE_DIG_EXIT="9"), path_prefix=fakebin
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "INTERNAL_IP4_DNS" not in env
+    assert not (tmp_path / "stub.out.scutil").exists()
+    assert "did not answer through utun9" in proc.stderr
+
+
+def test_dns_without_a_domain_is_not_registered(split, tmp_path):
+    fakebin = fake_dns_tools(tmp_path)
+
+    proc, env = run_split(
+        split, tmp_path, dns_env(tmp_path, CISCO_DEF_DOMAIN=""), path_prefix=fakebin
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "INTERNAL_IP4_DNS" not in env
+    assert not (tmp_path / "stub.out.scutil").exists()
+    assert not (tmp_path / "stub.out.dig").exists()
+    assert "without a domain" in proc.stderr
+
+
+def test_disconnect_removes_the_supplemental_dns_entry(split, tmp_path):
+    fakebin = fake_dns_tools(tmp_path)
+
+    proc, env = run_split(
+        split, tmp_path, dns_env(tmp_path, reason="disconnect"), path_prefix=fakebin
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "INTERNAL_IP4_DNS" not in env
+    scutil = (tmp_path / "stub.out.scutil").read_text()
+    assert "remove State:/Network/Service/utun9/DNS" in scutil
+    assert "set State:" not in scutil
 
 
 def test_full_tunnel_with_configured_routes_is_forced_to_split(split, tmp_path):

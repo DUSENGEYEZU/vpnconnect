@@ -14,7 +14,14 @@
 #    includes, as Cisco's client does. The stock vpnc-script only registers
 #    them, so in split mode lookups for the VPN's domain would leave through
 #    the normal interface and time out.
-# 3. Record "<TUNDEV> <IP>" in <state>/<id>.iface after a successful connect
+# 3. DNS. vpnc-script's macOS split-mode DNS handling prepends the pushed
+#    servers to the primary resolver list, rewrites the Wi-Fi DNS with
+#    networksetup and marks the tunnel OverridePrimary, so one unreachable VPN
+#    resolver stalls every lookup on the Mac. The wrapper hides INTERNAL_IP4_DNS
+#    from vpnc-script and registers the pushed servers only as a supplemental
+#    resolver for the VPN's own domain(s), and only if one answers through the
+#    tunnel. On disconnect it removes that entry.
+# 4. Record "<TUNDEV> <IP>" in <state>/<id>.iface after a successful connect
 #    so the dashboard can show them; remove the file on disconnect.
 #
 # Must run on macOS /bin/bash 3.2: no arrays, no mapfile.
@@ -143,8 +150,67 @@ case "${reason:-}" in
     ;;
 esac
 
+# Register the pushed DNS servers for the VPN's domains only, if they answer.
+register_vpn_dns() {
+  local server responding="" domains
+  [ -n "$VPN_DNS_SERVERS" ] && [ -n "${TUNDEV:-}" ] || return 0
+  domains=$(printf '%s' "$VPN_DNS_DOMAINS" | tr -s ' ' | sed 's/^ //;s/ $//')
+  if [ -z "$domains" ]; then
+    echo "vpnconnect: server pushed DNS $VPN_DNS_SERVERS without a domain; not registering it (it would apply to every lookup)" >&2
+    return 0
+  fi
+  for server in $VPN_DNS_SERVERS; do
+    if dig +time=1 +tries=1 +short "@$server" "${domains%% *}" SOA >/dev/null 2>&1; then
+      responding="$responding $server"
+    fi
+  done
+  responding="${responding# }"
+  if [ -z "$responding" ]; then
+    echo "vpnconnect: DNS $VPN_DNS_SERVERS did not answer through $TUNDEV; not registering it" >&2
+    return 0
+  fi
+  scutil >/dev/null 2>&1 <<EOF
+open
+d.init
+d.add ServerAddresses * $responding
+d.add SupplementalMatchDomains * $domains
+set State:/Network/Service/$TUNDEV/DNS
+close
+EOF
+}
+
+unregister_vpn_dns() {
+  [ -n "${TUNDEV:-}" ] || return 0
+  scutil >/dev/null 2>&1 <<EOF
+open
+remove State:/Network/Service/$TUNDEV/DNS
+close
+EOF
+}
+
+# Keep the DNS details for ourselves and hide them from vpnc-script, whose
+# whole DNS block (prepend, networksetup, OverridePrimary) is gated on
+# INTERNAL_IP4_DNS being set.
+VPN_DNS_SERVERS="${INTERNAL_IP4_DNS:-}"
+VPN_DNS_DOMAINS="${CISCO_DEF_DOMAIN:-}"
+if [ -n "${CISCO_SPLIT_DNS:-}" ]; then
+  VPN_DNS_DOMAINS="$VPN_DNS_DOMAINS $(printf '%s' "$CISCO_SPLIT_DNS" | tr ',' ' ')"
+fi
+unset INTERNAL_IP4_DNS INTERNAL_IP6_DNS
+
 "$VPNC_SCRIPT" "$@"
 rc=$?
+
+case "${reason:-}" in
+  connect|reconnect)
+    if [ "$rc" -eq 0 ]; then
+      register_vpn_dns
+    fi
+    ;;
+  disconnect)
+    unregister_vpn_dns
+    ;;
+esac
 
 if [ -n "${VPNCONNECT_ID:-}" ] && [ -n "${VPNCONNECT_STATE_DIR:-}" ]; then
   iface_file="$VPNCONNECT_STATE_DIR/$VPNCONNECT_ID.iface"
