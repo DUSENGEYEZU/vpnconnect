@@ -12,6 +12,13 @@ if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
   echo "vpnconnect is already running: http://127.0.0.1:$PORT/"
   exit 0
 fi
+# --foreground: stay attached, for the login item (scripts/autostart.sh). macOS
+# charges a process's access to ~/Documents to the app that launched it and
+# refuses every read once that app has exited, so the launcher must live as
+# long as the dashboard.
+if [ "${1:-}" = "--foreground" ]; then
+  exec uv run flask run >>"$LOG" 2>&1
+fi
 nohup uv run flask run >>"$LOG" 2>&1 &
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
