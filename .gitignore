@@ -1,7 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
-.env
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
@@ -18,3 +17,5 @@ vpns.yaml
 # Per-tunnel pid, log and iface files written at runtime
 state/*
 !state/.gitkeep
+config.bat
+node_modules
