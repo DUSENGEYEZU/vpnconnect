@@ -112,10 +112,14 @@ scripts/autostart.sh remove    # undo
 ```
 
 This creates a tiny launcher app, `~/Applications/vpnconnect-autostart.app`,
-and registers it as a login item; it runs `scripts/app-start.sh`. The first
-time it runs, macOS may ask to allow it access to your Documents folder: click
-Allow. A `launchd` agent is not used because macOS blocks background services
-from `~/Documents`, where this project lives.
+and registers it as a login item; it runs `scripts/app-start.sh --foreground`
+and stays running, without a Dock icon, for as long as the dashboard does. The
+first time it runs, macOS may ask to allow it access to your Documents folder:
+click Allow. Both follow from this project living in `~/Documents`: macOS
+charges a process's access there to the app that launched it and refuses every
+read once that app has exited (`PermissionError: [Errno 1]` on the state
+files), and a `launchd` agent never gets access at all. For the same reason a
+dashboard started by hand keeps its access only while Terminal is running.
 
 ## Configuration
 
